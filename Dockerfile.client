@@ -1,0 +1,23 @@
+FROM node:20-alpine AS build
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+# VITE_WS_URL is baked into the client bundle at build time.
+ARG VITE_WS_URL
+ENV VITE_WS_URL=$VITE_WS_URL
+RUN npm run build
+
+FROM node:20-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=build /app/build ./build
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/package-lock.json ./package-lock.json
+RUN npm ci --omit=dev
+
+EXPOSE 3000
+CMD ["node", "build"]

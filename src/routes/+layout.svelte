@@ -4,6 +4,8 @@
 </svelte:head>
 
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   const cardKindVariants: CardType[] = ["creature", "construction", "casting"];
 
   const STARTING_MANA = 4;
@@ -1389,7 +1391,7 @@
     id: "iron_training", kind: "buff",
     name: "Iron Training",
     description: "Creatures you play gain +1 defense.",
-    icon: "ra-shield-2", color: "#5080c0",
+    icon: "ra-shield", color: "#5080c0",
     trigger: EventTime.played,
     react(state, event, owner) {
       const tid = event.target;
@@ -1447,24 +1449,10 @@
     },
   };
 
-  const BuffThriftySorcerer: Passive = {
-    id: "thrifty_sorcerer", kind: "buff",
-    name: "Thrifty Sorcerer",
-    description: "After you finish a casting spell, refund 1 mana.",
-    icon: "ra-crystals", color: "#60a0c0",
-    trigger: EventTime.cast,
-    react(state, event, owner) {
-      const ce = event as CastEvent;
-      if (ce.caster !== owner || ce.cast_kind !== "casting") return [];
-      state.players[owner].mana += 1;
-      state.log.push(`[Pact] Thrifty Sorcerer refunds 1 mana to ${owner}.`);
-      return [];
-    },
-  };
-
   const BuffSecondWind: Passive = {
     id: "second_wind", kind: "buff",
     name: "Second Wind",
+    icon: "ra-lightning-storm",
     description: "At the start of your turn, heal each of your creatures for 1.",
     icon: "ra-wind-hole", color: "#80c0a0",
     trigger: EventTime.turn_start,
@@ -1635,6 +1623,7 @@
 
   const CurseBleedingWill: Passive = {
     id: "bleeding_will", kind: "curse",
+    icon: "ra-player-shot",
     name: "Bleeding Will",
     description: "At the end of your turn, each of your creatures takes 1 damage.",
     icon: "ra-bleeding-wound", color: "#902030",
@@ -2196,32 +2185,231 @@
     );
   }
 
+  // ============================================================
+  // MULTIPLAYER: serialization registries + WS client
+  // ============================================================
+
+  const ABILITY_REGISTRY: Record<string, Ability> = {};
+  for (const ab of [
+    healingAura, damageShield, Smite, deathCurse, gainManaOnDeath, thornAura,
+    warCry, RegeneratingHeads, castleVengeance, coveringFire, manaSpring,
+    thinksFireIsAToy, Key, Sacred, Reflection, BloodSucker, Fixing, Leadership,
+    GivePotion, GivePotionBackfire, PowerCreep, SelfReplicate, Detonate, MagicEducation,
+  ]) { ABILITY_REGISTRY[ab.name] = ab; }
+
+  const PASSIVE_REGISTRY: Record<string, Passive> = {};
+  for (const p of [...ALL_BUFFS, ...ALL_CURSES]) PASSIVE_REGISTRY[p.id] = p;
+
+  const TEMPLATE_REGISTRY: Record<string, CreatureTemplate | ConstructionTemplate | CastingTemplate> = {};
+  for (const t of [...creatures, ...constructions, ...castings]) TEMPLATE_REGISTRY[t.name] = t;
+
+  function serializeEntity(e: Entity | null): any {
+    if (!e) return null;
+    const inner = e.entity;
+    const base: any = {
+      name: inner.name,
+      kind: inner.kind,
+      defense: inner.defense,
+      base_hp: inner.base_hp,
+      remaining_hp: inner.remaining_hp,
+      abilityNames: inner.abilities.map(a => a.name),
+      attributes: [...inner.attributes],
+    };
+    if (inner instanceof Creature) {
+      base.attack = inner.attack;
+      base.base_energy = inner.base_energy;
+      base.energy_remaining = inner.energy_remaining;
+    }
+    return { id: e.id, controller: e.controller, description: e.description, inner: base };
+  }
+
+  function rehydrateEntity(dto: any): Entity | null {
+    if (!dto) return null;
+    const i = dto.inner;
+    const abilities = i.abilityNames.map((n: string) => ABILITY_REGISTRY[n]).filter(Boolean);
+    let inner: Creature | Construction;
+    if (i.kind === "creature") {
+      const c = new Creature(i.name, i.attack, i.defense, i.base_hp, i.base_energy, abilities, i.attributes);
+      c.remaining_hp = i.remaining_hp;
+      c.energy_remaining = i.energy_remaining;
+      inner = c;
+    } else {
+      inner = new Construction(i.name, i.defense, i.base_hp, abilities, i.attributes);
+      inner.remaining_hp = i.remaining_hp;
+    }
+    return { id: dto.id, controller: dto.controller, description: dto.description, entity: inner };
+  }
+
+  function serializeDeck(d: Deck): any {
+    return {
+      i_vals: { ...d.i_vals },
+      cardNames: {
+        creature:     (d.cards.creature as Playable[]).map(t => t.name),
+        construction: (d.cards.construction as Playable[]).map(t => t.name),
+        casting:      (d.cards.casting as Playable[]).map(t => t.name),
+      },
+    };
+  }
+
+  function rehydrateDeck(dto: any): Deck {
+    const lookup = (n: string) => TEMPLATE_REGISTRY[n];
+    const d = new Deck(
+      dto.cardNames.creature.map(lookup).filter(Boolean) as CreatureTemplate[],
+      dto.cardNames.construction.map(lookup).filter(Boolean) as ConstructionTemplate[],
+      dto.cardNames.casting.map(lookup).filter(Boolean) as CastingTemplate[],
+    );
+    d.i_vals = { ...dto.i_vals };
+    return d;
+  }
+
+  function serializePact(p: Pact | null): any {
+    if (!p) return null;
+    return { id: p.id, buffId: p.buff?.id ?? null, curseId: p.curse?.id ?? null };
+  }
+
+  function rehydratePact(dto: any): Pact | null {
+    if (!dto) return null;
+    return {
+      id: dto.id,
+      buff:  dto.buffId  ? (PASSIVE_REGISTRY[dto.buffId]  ?? null) : null,
+      curse: dto.curseId ? (PASSIVE_REGISTRY[dto.curseId] ?? null) : null,
+    };
+  }
+
+  function serializeOffering(offering: Pact[]): any {
+    return offering.map(serializePact);
+  }
+
+  function rehydrateOffering(dtos: any[]): Pact[] {
+    return dtos.map(rehydratePact).filter((p): p is Pact => p !== null);
+  }
+
+  function serializeGameState(s: GameState): any {
+    return {
+      turn: s.turn,
+      turnNumber: s.turnNumber,
+      log: [...s.log],
+      grid: s.grid.map(serializeEntity),
+      players: {
+        A: { id: s.players.A.id, mana: s.players.A.mana, castleHolds: s.players.A.castleHolds },
+        B: { id: s.players.B.id, mana: s.players.B.mana, castleHolds: s.players.B.castleHolds },
+      },
+      decks:    { A: serializeDeck(s.decks.A),    B: serializeDeck(s.decks.B) },
+      reserves: { A: serializeDeck(s.reserves.A), B: serializeDeck(s.reserves.B) },
+      pacts:    { A: serializePact(s.pacts.A),    B: serializePact(s.pacts.B) },
+    };
+  }
+
+  function rehydrateGameState(dto: any): GameState {
+    // Use the real constructor so $state-decorated fields are reactive, then overwrite.
+    const s = new GameState(makeDeck());
+    s.turn       = dto.turn;
+    s.turnNumber = dto.turnNumber;
+    s.log        = [...dto.log];
+    s.grid       = dto.grid.map(rehydrateEntity);
+    const pA = new PlayerState('A', dto.players.A.mana, dto.players.A.castleHolds);
+    const pB = new PlayerState('B', dto.players.B.mana, dto.players.B.castleHolds);
+    s.players  = { A: pA, B: pB };
+    s.decks    = { A: rehydrateDeck(dto.decks.A),    B: rehydrateDeck(dto.decks.B) };
+    s.reserves = { A: rehydrateDeck(dto.reserves.A), B: rehydrateDeck(dto.reserves.B) };
+    s.pacts    = { A: rehydratePact(dto.pacts.A),    B: rehydratePact(dto.pacts.B) };
+    return s;
+  }
+
+  // ── WebSocket client ───────────────────────────────────────────────────────
+  let ws: WebSocket | null = null;
+  let myPlayerId:        PlayerId | null = $state(null);
+  let opponentConnected: boolean         = $state(false);
+  let connectionStatus:  string          = $state("connecting…");
+  let applyingRemoteUpdate = false;
+
+  function wsUrl(): string {
+    if (typeof window === 'undefined') return '';
+    const envUrl = (import.meta.env.VITE_WS_URL as string | undefined) ?? '';
+    if (envUrl) return envUrl;
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.hostname}:8080`;
+  }
+
+  function connectWS(): void {
+    if (typeof window === 'undefined') return;
+    try { ws = new WebSocket(wsUrl()); } catch { connectionStatus = "connection failed"; return; }
+    ws.onopen    = () => { connectionStatus = "connected, awaiting role…"; };
+    ws.onclose   = () => { connectionStatus = "disconnected"; ws = null; };
+    ws.onerror   = () => { connectionStatus = "connection error"; };
+    ws.onmessage = (ev) => {
+      let msg: any;
+      try { msg = JSON.parse(ev.data as string); } catch { return; }
+      if (msg.type === 'assign') {
+        myPlayerId = msg.you;
+        connectionStatus = `you are player ${msg.you}`;
+      } else if (msg.type === 'presence') {
+        opponentConnected = !!msg.opponentConnected;
+      } else if (msg.type === 'full') {
+        connectionStatus = "room full — try again later";
+      } else if (msg.type === 'request_state') {
+        sendFullState();
+      } else if (msg.type === 'state') {
+        applyRemoteState(msg.state, msg.offering);
+      }
+    };
+  }
+
+  function sendFullState(): void {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: 'state',
+      state: serializeGameState(game_state),
+      offering: serializeOffering(pactOffering),
+    }));
+  }
+
+  function applyRemoteState(stateDto: any, offeringDto: any[] | undefined): void {
+    applyingRemoteUpdate = true;
+    game_state = rehydrateGameState(stateDto);
+    if (offeringDto) pactOffering = rehydrateOffering(offeringDto);
+    for (const pid of ["A", "B"] as PlayerId[]) {
+      if (game_state.players[pid].castleHolds >= 3) winner = pid;
+    }
+    applyingRemoteUpdate = false;
+  }
+
+  function broadcastAfterAction(): void {
+    if (applyingRemoteUpdate) return;
+    sendFullState();
+  }
+
+  onMount(connectWS);
+
   let game_state = $state(new GameState(makeDeck()));
 
   // ── Pact selection state ────────────────────────────────────────────────────
   const PACT_OFFER_COUNT = 5;
   let pactOffering: Pact[] = $state(generatePactOffering(PACT_OFFER_COUNT));
-  let pactPicker:   PlayerId | null = $state("A");
 
   function selectPact(pact: Pact): void {
-    if (!pactPicker) return;
-    game_state.pacts[pactPicker] = { id: pact.id, buff: pact.buff, curse: pact.curse };
-    game_state.log.push(`Player ${pactPicker} binds the pact: ${pact.buff?.name} / ${pact.curse?.name}.`);
-    pactPicker = pactPicker === "A" ? "B" : null;
-    if (pactPicker === null) {
+    if (!myPlayerId) return;
+    if (game_state.pacts[myPlayerId]) return;
+    game_state.pacts[myPlayerId] = { id: pact.id, buff: pact.buff, curse: pact.curse };
+    game_state.log.push(`Player ${myPlayerId} binds the pact: ${pact.buff?.name} / ${pact.curse?.name}.`);
+    const other: PlayerId = myPlayerId === "A" ? "B" : "A";
+    if (game_state.pacts[other]) {
       game_state.log.push(`--- Turn 1: Player ${game_state.turn} (${game_state.players[game_state.turn].mana} mana) ---`);
       game_state.fireTurnStart(game_state.turn);
     }
+    broadcastAfterAction();
   }
 
   // ── Derived display snapshots ───────────────────────────────────────────────
   let grid    = $derived([...game_state.grid]);
   let turn    = $derived(game_state.turn);
   let viewOrder = $derived(
-    turn === 'A'
+    (myPlayerId ?? 'A') === 'A'
       ? Array.from({ length: NUM_CELLS }, (_, k) => k)
       : Array.from({ length: NUM_CELLS }, (_, k) => NUM_CELLS - 1 - k)
   );
+  let bothPactsPicked = $derived(!!game_state.pacts.A && !!game_state.pacts.B);
+  let myTurn          = $derived(!!myPlayerId && myPlayerId === turn && bothPactsPicked);
   let players = $derived(game_state.players);
   let hands   = $derived(game_state.reserves);
   let gameLog = $derived([...game_state.log].reverse().slice(0, 50));
@@ -2295,7 +2483,7 @@
 
   function onDrop(e: DragEvent, toIdx: number) {
     e.preventDefault();
-    if (winner) { resetDrag(); return; }
+    if (winner || !myTurn) { resetDrag(); return; }
 
     const toCoords     = index_to_coords(toIdx);
     const targetEntity = grid[toIdx];
@@ -2314,6 +2502,7 @@
     }
 
     resetDrag();
+    broadcastAfterAction();
   }
 
   function resetDrag() {
@@ -2327,6 +2516,7 @@
   // ── Turn management ──────────────────────────────────────────────────────────
   function endTurn() {
     if (winner) return;
+    if (!myTurn) return;
     const currentTurn = game_state.turn;
 
     const castleEntity = game_state.grid[CASTLE_IDX];
@@ -2345,6 +2535,7 @@
     }
 
     game_state.nextTurn();
+    broadcastAfterAction();
   }
 
   // ── UI helpers ───────────────────────────────────────────────────────────────
@@ -2366,8 +2557,9 @@
     if (i === CASTLE_IDX) parts.push('castle-cell');
     if (dragOverIdx === i) parts.push('drag-over');
     const coords = index_to_coords(i);
-    if (coords.x === playRowX(turn)) {
-      parts.push(turn === 'A' ? 'play-row-a' : 'play-row-b');
+    const rowOwner: PlayerId = myPlayerId ?? 'A';
+    if (coords.x === playRowX(rowOwner)) {
+      parts.push(rowOwner === 'A' ? 'play-row-a' : 'play-row-b');
     }
     const entity = grid[i];
     if (entity) {
@@ -2394,19 +2586,27 @@
     winner        = null;
     inspected     = null;
     pactOffering  = generatePactOffering(PACT_OFFER_COUNT);
-    pactPicker    = "A";
     resetDrag();
+    broadcastAfterAction();
   }
 </script>
 
 <!-- ─── Markup ───────────────────────────────────────────────────────────── -->
-{#if pactPicker !== null}
+{#if !myPlayerId}
+  <div class="pact-overlay">
+    <div class="pact-modal">
+      <h1 class="pact-title">Connecting…</h1>
+      <p class="pact-sub">{connectionStatus}</p>
+    </div>
+  </div>
+{:else if !game_state.pacts[myPlayerId]}
   <div class="pact-overlay">
     <div class="pact-modal">
       <h1 class="pact-title">Bind Your Pact</h1>
       <p class="pact-sub">
-        Player <strong style="color:{playerColor(pactPicker)}">{pactPicker}</strong>, choose one pair —
+        Player <strong style="color:{playerColor(myPlayerId)}">{myPlayerId}</strong>, choose one pair —
         both its gift and its price will last the whole match.
+        {#if !opponentConnected}<br /><em style="opacity:0.7">(Waiting for opponent…)</em>{/if}
       </p>
       <div class="pact-grid">
         {#each pactOffering as pact (pact.id)}
@@ -2431,6 +2631,13 @@
           </div>
         {/each}
       </div>
+    </div>
+  </div>
+{:else if !bothPactsPicked}
+  <div class="pact-overlay">
+    <div class="pact-modal">
+      <h1 class="pact-title">Pact Bound</h1>
+      <p class="pact-sub">Waiting for opponent to choose their pact…</p>
     </div>
   </div>
 {/if}
@@ -2650,6 +2857,7 @@
           {@const canDrag    =
               cell &&
               cell.controller === turn &&
+              myTurn &&
               entityType == "creature" &&
               (entity as Creature).energy_remaining > 0
           }
