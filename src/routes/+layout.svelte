@@ -1449,10 +1449,25 @@
     },
   };
 
+  const BuffThriftySorcerer: Passive = {
+    id: "thrifty_sorcerer", kind: "buff",
+    name: "Thrifty Sorcerer",
+    description: "When you play a casting card, refund 1 mana.",
+    icon: "ra-crystal-ball", color: "#a070c0",
+    trigger: EventTime.cast,
+    react(state, event, owner) {
+      const e = event as CastEvent;
+      if (e.caster !== owner) return [];
+      if (e.cast_kind !== "casting") return [];
+      state.players[owner].mana += 1;
+      state.log.push(`[Pact] Thrifty Sorcerer refunds 1 mana to ${owner}.`);
+      return [];
+    },
+  };
+
   const BuffSecondWind: Passive = {
     id: "second_wind", kind: "buff",
     name: "Second Wind",
-    icon: "ra-lightning-storm",
     description: "At the start of your turn, heal each of your creatures for 1.",
     icon: "ra-wind-hole", color: "#80c0a0",
     trigger: EventTime.turn_start,
@@ -1623,7 +1638,6 @@
 
   const CurseBleedingWill: Passive = {
     id: "bleeding_will", kind: "curse",
-    icon: "ra-player-shot",
     name: "Bleeding Will",
     description: "At the end of your turn, each of your creatures takes 1 damage.",
     icon: "ra-bleeding-wound", color: "#902030",
