@@ -23,7 +23,7 @@
   type PlayerId       = "A" | "B";
   type CardType = "creature" | "construction" | "casting";
 
-  type Attribute = "undead" | "human" | "magic";
+  type Attribute = "undead" | "human" | "magic" | "has potion";
 
   interface Coords {
     x: number;
@@ -339,7 +339,8 @@
   // GAME STATE
   // ============================================================
 
-  const HAND_SIZE = 4;
+  const HAND_SIZES: Record<CardType, number> = { creature: 4, construction: 3, casting: 2 };
+  const REROLL_COST = 1;
 
   class GameState {
     next_id: number = 0;
@@ -365,10 +366,10 @@
         B: new Deck([], [], []),
       };
 
-      for (let i = 0; i < HAND_SIZE; i++) {
-        for (let j = 0; j < 2; j++) {
-          let p: PlayerId = j == 0 ? 'A' : 'B';
-          for (const v of cardKindVariants) {
+      for (let j = 0; j < 2; j++) {
+        let p: PlayerId = j == 0 ? 'A' : 'B';
+        for (const v of cardKindVariants) {
+          for (let i = 0; i < HAND_SIZES[v]; i++) {
             this.reserves[p].cards[v].push(this.decks[p].draw(v));
           }
         }
@@ -430,6 +431,17 @@
       this.reserves[this.turn].cards[kind][idx] = this.decks[this.turn].draw(kind);
     }
 
+    reroll(idx: number, kind: CardType): boolean {
+      const p = this.players[this.turn];
+      if (p.mana < REROLL_COST) return false;
+      const card = this.reserves[this.turn].cards[kind][idx];
+      if (!card) return false;
+      p.mana -= REROLL_COST;
+      this.reserves[this.turn].cards[kind][idx] = this.decks[this.turn].draw(kind);
+      this.log.push(`${this.turn} rerolls a ${kind} slot for ${REROLL_COST} mana.`);
+      return true;
+    }
+
     play(cardIndex: number, where: Coords, kind: CardType): PlayCardResult {
       const card = this.reserves[this.turn].cards[kind][cardIndex];
       if (!card) return "invalid_coords";
@@ -457,6 +469,7 @@
         }
         this.players[caster].mana -= card.cost;
         followups = casting.onPlay(this, caster, resolved);
+        this.draw(cardIndex, kind);
       } else {
         if (entityAt) return "invalid_coords";
         this.players[caster].mana -= card.cost;
@@ -491,9 +504,10 @@
     // ----------------------------------------------------------
 
     private calculateDamage (attack: number, defense: number): number {
-      let baseDamage = Math.max(0, attack - defense);
-      let crits = Math.max(0, attack - baseDamage);
-      return baseDamage + crits * 2;
+      // let baseDamage = Math.max(0, attack - defense);
+      // let crits = Math.max(0, attack - baseDamage);
+      // return baseDamage + crits * 2;
+      return Math.max(0, attack - defense);
     }
 
     private triggerEvent(event: GameEvent): void {
@@ -664,6 +678,10 @@
     }
 
     attack(attackerId: EntityId, defenderId: EntityId): void {
+      const attacker = this.getEntity(attackerId);
+      if (!attacker) return;
+      if (!(attacker.entity instanceof Creature)) return;
+      if (attacker.entity.energy_remaining <= 0) return;
       this.triggerEvent({
         trigger: EventTime.deal_damage,
         source:  attackerId,
@@ -940,7 +958,7 @@
 
   const coveringFire: Ability = {
     name:        "Covering Fire",
-    description: "At the start of your turn, snipe the nearest enemy for 1 damage.",
+    description: "At the start of your turn, snipe the nearest enemy entity for 1 damage.",
     trigger:     EventTime.turn_start,
     react(state, event, selfId): GameEvent[] {
       const self = state.getEntity(selfId);
@@ -1175,20 +1193,40 @@
       const origin = state.findCoords(selfId);
       if (!self || !origin) return [];
       if ((event as TurnEvent).player !== self.controller) return [];
-      const recipients = (self.entity as any)._potionRecipients ?? new Set<number>();
       for (const neighbour of adjacentEntities(state, origin)) {
         if (neighbour.controller !== self.controller) continue;
         if (!(neighbour.entity instanceof Creature)) continue;
-        if (recipients.has(neighbour.id)) continue;
+        if (neighbour.entity.attributes.includes("has potion")) continue;
         neighbour.entity.attack  += 3;
         neighbour.entity.defense += 3;
-        recipients.add(neighbour.id);
         state.log.push(`Give Potion: ${neighbour.description} gains +3 atk/+3 def.`);
       }
-      (self.entity as any)._potionRecipients = recipients;
       return [];
     },
   };
+
+  const TakePotion: Ability = {
+    name:        "",
+    description: "",
+    trigger:     EventTime.turn_start,
+    react(state, event, selfId): GameEvent[] {
+      const self = state.getEntity(selfId);
+      const origin = state.findCoords(selfId);
+      if (!self || !origin) return [];
+      if ((event as TurnEvent).player !== self.controller) return [];
+      for (const e of state.allEntities()) {
+        if (e.controller !== self.controller) continue;
+        if (!(e.entity instanceof Creature)) continue;
+        if (!e.entity.attributes.includes("has potion")) continue;
+        e.entity.attack  -= 4;
+        e.entity.defense -= 4;
+        e.entity.attack = Math.max(0, e.entity.attack);
+        e.entity.defense = Math.max(0, e.entity.defense);
+        state.log.push(`The absense of the potions has taken 4 attack and defense from`);
+      }
+      return [];
+    },
+  }
 
   const GivePotionBackfire: Ability = {
     name:        "Bitter Brew",
@@ -2443,9 +2481,19 @@
 
   // ── Inspector ────────────────────────────────────────────────────────────────
   type Inspected =
-    | { kind: 'hand';  card:   Playable }
-    | { kind: 'board'; entity: Entity   }
+    | { kind: 'hand';      card:    Playable }
+    | { kind: 'board';     entity:  Entity   }
+    | { kind: 'passive';   passive: Passive; owner: PlayerId }
+    | { kind: 'ability';   ability: Ability; owner: PlayerId; entityName: string }
+    | { kind: 'attribute'; attribute: Attribute; owner: PlayerId; entityName: string }
     | null;
+
+  const ATTRIBUTE_META: Record<Attribute, { icon: string; color: string; description: string }> = {
+    undead:       { icon: 'ra-skull',       color: '#a080c0', description: 'Counts as undead for effects that care (e.g. Necromancy, holy damage).' },
+    human:        { icon: 'ra-player',      color: '#d0b080', description: 'Counts as human for effects that target humans.' },
+    magic:        { icon: 'ra-crystal-ball',color: '#80a0ff', description: 'Counts as magical for effects that target magic.' },
+    'has potion': { icon: 'ra-round-potion',color: '#60c080', description: 'Carries a potion that can be consumed or stolen.' },
+  };
 
   let inspected: Inspected = $state(null);
 
@@ -2678,13 +2726,15 @@
           <div class="pact-corner" title="Player {pid} pact: {pact.buff?.name ?? '—'} / {pact.curse?.name ?? '—'}">
             <span class="pact-corner-label" style="color:{playerColor(pid)}">P{pid}</span>
             {#if pact.buff}
-              <i class="ra {pact.buff.icon} pact-corner-icon" style="color:{pact.buff.color}" title="{pact.buff.name}: {pact.buff.description}"></i>
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <i role="button" tabindex="0" class="ra {pact.buff.icon} pact-corner-icon pact-corner-clickable" style="color:{pact.buff.color}" title="{pact.buff.name}: {pact.buff.description}" onclick={() => { inspected = { kind: 'passive', passive: pact.buff!, owner: pid }; }}></i>
             {:else}
               <i class="ra ra-broken-heart pact-corner-icon pact-spent" title="Buff consumed"></i>
             {/if}
             <span class="pact-corner-slash">/</span>
             {#if pact.curse}
-              <i class="ra {pact.curse.icon} pact-corner-icon" style="color:{pact.curse.color}" title="{pact.curse.name}: {pact.curse.description}"></i>
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <i role="button" tabindex="0" class="ra {pact.curse.icon} pact-corner-icon pact-corner-clickable" style="color:{pact.curse.color}" title="{pact.curse.name}: {pact.curse.description}" onclick={() => { inspected = { kind: 'passive', passive: pact.curse!, owner: pid }; }}></i>
             {:else}
               <i class="ra ra-broken-heart pact-corner-icon pact-spent" title="Curse lifted"></i>
             {/if}
@@ -2706,7 +2756,9 @@
         <span class="stat-chip hold-chip" title="Castle hold turns">
           <i class="ra ra-tower"></i>{players[turn].castleHolds}/{CASTLE_HOLD_WIN}
         </span>
-        <button class="btn-end-turn" onclick={endTurn}>End Turn →</button>
+        {#if myTurn}
+          <button class="btn-end-turn" onclick={endTurn}>End Turn →</button>
+        {/if}
       {/if}
     </div>
   </header>
@@ -2837,11 +2889,36 @@
               </li>
             {/if}
           </ul>
+          {#if stats.attributes && stats.attributes.length > 0}
+            <div class="divider"><span>ATTRIBUTES</span></div>
+            <ul class="attr-list">
+              {#each stats.attributes as attr}
+                {@const am = ATTRIBUTE_META[attr]}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <li
+                  class="attr-chip"
+                  role="button"
+                  tabindex="0"
+                  style="border-color:{am.color}55; background:{am.color}12"
+                  onclick={() => { inspected = { kind: 'attribute', attribute: attr, owner: entity.controller, entityName: stats.name }; }}
+                >
+                  <i class="ra {am.icon}" style="color:{am.color}"></i>
+                  <span>{attr}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
           {#if stats.abilities.length > 0}
             <div class="divider"><span>ABILITIES</span></div>
             <ul class="stat-list">
               {#each stats.abilities as ab}
-                <li class="stat-row ability-row">
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <li
+                  class="stat-row ability-row ability-clickable"
+                  role="button"
+                  tabindex="0"
+                  onclick={() => { inspected = { kind: 'ability', ability: ab, owner: entity.controller, entityName: stats.name }; }}
+                >
                   <i class="ra ra-lightning"></i>
                   <div class="ab-body">
                     <span class="ab-name">{ab.name}</span>
@@ -2856,6 +2933,56 @@
           {#if creature && creature.energy_remaining <= 0}
             <p class="exhausted-note">No energy — cannot act this turn</p>
           {/if}
+        </div>
+
+      {:else if inspected?.kind === 'passive'}
+        {@const p     = inspected.passive}
+        {@const owner = inspected.owner}
+        <div class="insp">
+          <div class="insp-glow" style="--ec:{p.color}"></div>
+          <div class="insp-ring" style="border-color:{p.color}55; background:{p.color}0d">
+            <i class="ra {p.icon}" style="color:{p.color}"></i>
+          </div>
+          <h2 class="insp-name">{p.name}</h2>
+          <span class="controller-badge" style="color:{playerColor(owner)}">
+            Player {owner} — {p.kind === 'buff' ? 'Buff' : 'Curse'}
+          </span>
+          <div class="divider"><span>EFFECT</span></div>
+          <p class="passive-desc">{p.description}</p>
+        </div>
+
+      {:else if inspected?.kind === 'ability'}
+        {@const ab    = inspected.ability}
+        {@const owner = inspected.owner}
+        {@const color = '#c0a040'}
+        <div class="insp">
+          <div class="insp-glow" style="--ec:{color}"></div>
+          <div class="insp-ring" style="border-color:{color}55; background:{color}0d">
+            <i class="ra ra-lightning" style="color:{color}"></i>
+          </div>
+          <h2 class="insp-name">{ab.name}</h2>
+          <span class="controller-badge" style="color:{playerColor(owner)}">
+            Player {owner} — {inspected.entityName}
+          </span>
+          <div class="divider"><span>EFFECT</span></div>
+          <p class="passive-desc">{ab.description ?? 'No description.'}</p>
+        </div>
+
+      {:else if inspected?.kind === 'attribute'}
+        {@const attr  = inspected.attribute}
+        {@const owner = inspected.owner}
+        {@const am    = ATTRIBUTE_META[attr]}
+        <div class="insp">
+          <div class="insp-glow" style="--ec:{am.color}"></div>
+          <div class="insp-ring" style="border-color:{am.color}55; background:{am.color}0d">
+            <i class="ra {am.icon}" style="color:{am.color}"></i>
+          </div>
+          <h2 class="insp-name">{attr}</h2>
+          <span class="controller-badge" style="color:{playerColor(owner)}">
+            Player {owner} — {inspected.entityName}
+          </span>
+          <div class="divider"><span>EFFECT</span></div>
+          <p class="passive-desc">{am.description}</p>
         </div>
 
       {:else}
@@ -3110,6 +3237,17 @@
   .ab-body { display: flex; flex-direction: column; gap: 2px; flex: 1; }
   .ab-name { font-size: 0.88rem; color: #c0b080; }
   .ab-desc { font-size: 0.76rem; color: #8a8268; line-height: 1.3; font-style: italic; }
+  .ability-clickable { cursor: pointer; border-radius: 6px; transition: background 0.15s; }
+  .ability-clickable:hover { background: rgba(192,160,64,0.1); }
+  .attr-list { list-style: none; padding: 0; margin: 0.25rem 0 0.5rem; display: flex; flex-wrap: wrap; gap: 6px; }
+  .attr-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border: 1px solid; border-radius: 999px;
+    font-size: 0.78rem; color: #c0b080; cursor: pointer;
+    transition: transform 0.12s, filter 0.15s;
+  }
+  .attr-chip:hover { transform: translateY(-1px); filter: brightness(1.25); }
+  .attr-chip i { font-size: 0.9rem; }
   .exhausted-note { font-size: 0.78rem; color: #804040; font-style: italic; margin-top: 0.35rem; }
   .insp-empty {
     flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -3292,5 +3430,8 @@
   }
   .pact-corner-label { font-family: 'Cinzel', serif; font-size: 0.72rem; font-weight: 700; }
   .pact-corner-icon { font-size: 1.2rem; }
+  .pact-corner-clickable { cursor: pointer; transition: transform 0.12s, filter 0.12s; }
+  .pact-corner-clickable:hover { transform: scale(1.25); filter: drop-shadow(0 0 6px currentColor); }
+  .passive-desc { font-size: 0.9rem; color: #c0b080; line-height: 1.4; text-align: center; padding: 0 0.5rem; }
   .pact-corner-slash { color: #504060; }
 </style>
