@@ -1185,8 +1185,8 @@
   };
 
   const GivePotion: Ability = {
-    name:        "Give Potion",
-    description: "At the start of your turn, grant +3 attack and +3 defense to adjacent allied creatures (once each). When this creature dies, every recipient loses 4 attack and 4 defense.",
+    name:        "Gives Out Sus Potions",
+    description: "At the start of your turn, grant +3 attack and +3 defense to adjacent allied creatures (once each).",
     trigger:     EventTime.turn_start,
     react(state, event, selfId): GameEvent[] {
       const self = state.getEntity(selfId);
@@ -1206,8 +1206,8 @@
   };
 
   const TakePotion: Ability = {
-    name:        "",
-    description: "",
+    name:        "Potions are no longer available when he dies",
+    description: "When the potion dealer dies, every creature that got a potion from him gets -4 defense and -4 attack",
     trigger:     EventTime.turn_start,
     react(state, event, selfId): GameEvent[] {
       const self = state.getEntity(selfId);
@@ -1227,27 +1227,6 @@
       return [];
     },
   }
-
-  const GivePotionBackfire: Ability = {
-    name:        "Bitter Brew",
-    description: "When the Potion Dealer dies, every recipient of its potions loses 4 attack and 4 defense.",
-    trigger:     EventTime.killed,
-    react(state, event, selfId): GameEvent[] {
-      if (event.target !== selfId) return [];
-      const self = state.getEntity(selfId)
-        ?? state.allEntities().find(x => x.id === selfId);
-      const recipients: Set<number> | undefined = self ? (self.entity as any)._potionRecipients : undefined;
-      if (!recipients) return [];
-      for (const id of recipients) {
-        const r = state.getEntity(id);
-        if (!r || !(r.entity instanceof Creature)) continue;
-        r.entity.attack  = Math.max(0, r.entity.attack - 4);
-        r.entity.defense = Math.max(0, r.entity.defense - 4);
-        state.log.push(`Bitter Brew: ${r.description} loses 4 atk/4 def.`);
-      }
-      return [];
-    },
-  };
 
   const PowerCreep: Ability = {
     name:        "Power Creep",
@@ -1927,7 +1906,7 @@
     icon: 'ra-bottle-vapors', rarity: "uncommon",
     //Give potion: give +3 attack and +3 defense to adjacent allied creatures (once per receving creatures)
     //When he dies: give -4 attack and -4 defense to all creatures that received
-    abilities: [GivePotion], attributes: ["human"],
+    abilities: [GivePotion, TakePotion], attributes: ["human", "magic"],
     flavor: "its a dark path",
   }
 
@@ -1980,14 +1959,15 @@
 
   interface CastingTemplate extends Playable {
     kind: "casting";
-    name:      string;
-    cost:      number;
-    targeting: CastingTargeting;
-    onPlay:    (state: GameState, caster: PlayerId, target?: Entity) => GameEvent[];
-    icon?:     string;
-    color?:    string;
-    rarity?:   "common" | "uncommon" | "rare" | "legendary";
-    flavor?:   string;
+    name:        string;
+    cost:        number;
+    description: string;
+    targeting:   CastingTargeting;
+    onPlay:      (state: GameState, caster: PlayerId, target?: Entity) => GameEvent[];
+    icon?:       string;
+    color?:      string;
+    rarity?:     "common" | "uncommon" | "rare" | "legendary";
+    flavor?:     string;
   }
 
   // ============================================================
@@ -2073,6 +2053,7 @@
     kind: "casting",
     name:   "Lightning Bolt",
     cost:   4,
+    description: "Deal 10 damage to any entity on the board, ignoring defense.",
     targeting: { kind: "target", isLegal: () => true },
     onPlay(_state, _caster, target): GameEvent[] {
       if (!target) return [];
@@ -2094,6 +2075,7 @@
     kind: "casting",
     name:   "Haste",
     cost:   2,
+    description: "Refill one of your creatures' energy to full.",
     targeting: {
       kind: "target",
       isLegal: (_state, caster, candidate) =>
@@ -2115,6 +2097,7 @@
     kind: "casting",
     name:   "Mend",
     cost:   3,
+    description: "Fully heal a damaged entity (ally or enemy).",
     targeting: {
       kind: "target",
       isLegal: (_state, _caster, candidate) =>
@@ -2140,6 +2123,7 @@
     kind: "casting",
     name:   "Iron Skin",
     cost:   2,
+    description: "Permanently grant one of your entities +3 defense.",
     targeting: {
       kind: "target",
       isLegal: (_state, caster, candidate) => candidate.controller === caster,
@@ -2160,6 +2144,7 @@
     kind: "casting",
     name:   "Necromancy Wave",
     cost:   2,
+    description: "Give +1 attack to all your constructions and tag them as undead.",
     targeting: { kind: "none" },
     onPlay(state, caster, _target): GameEvent[] {
       for (let e of state.allEntities()) {
@@ -2186,6 +2171,7 @@
     kind: "casting",
     name:   "Holy Boon",
     cost:   5,
+    description: "Grant a target ally creature Smite, +3 attack, and +1 defense.",
     targeting: {
       kind: "target",
       isLegal: (_s, caster, candidate) =>
@@ -2246,7 +2232,7 @@
     healingAura, damageShield, Smite, deathCurse, gainManaOnDeath, thornAura,
     warCry, RegeneratingHeads, castleVengeance, coveringFire, manaSpring,
     thinksFireIsAToy, Key, Sacred, Reflection, BloodSucker, Fixing, Leadership,
-    GivePotion, GivePotionBackfire, PowerCreep, SelfReplicate, Detonate, MagicEducation,
+    GivePotion, TakePotion, PowerCreep, SelfReplicate, Detonate, MagicEducation,
   ]) { ABILITY_REGISTRY[ab.name] = ab; }
 
   const PASSIVE_REGISTRY: Record<string, Passive> = {};
@@ -2607,6 +2593,18 @@
     broadcastAfterAction();
   }
 
+  function rerollSlot(idx: number, kind: CardType, e: Event) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (winner || !myTurn) return;
+    if (!game_state.reroll(idx, kind)) {
+      game_state.log.push('Not enough mana to reroll.');
+      return;
+    }
+    if (inspected?.kind === 'hand') inspected = null;
+    broadcastAfterAction();
+  }
+
   // ── UI helpers ───────────────────────────────────────────────────────────────
   function uiMeta(name: string) {
     const allTemplates = [...creatures, ...constructions, ...castings];
@@ -2792,7 +2790,12 @@
           {/if}
           {#if v === 'casting'}
             <div class="divider"><span>EFFECT</span></div>
-            <p class="casting-hint">Drag onto any board entity to target it.</p>
+            <p class="passive-desc">{(card as CastingTemplate).description}</p>
+            <p class="casting-hint">
+              {(card as CastingTemplate).targeting.kind === 'none'
+                ? 'Drag onto the board to cast — no target needed.'
+                : 'Drag onto a board entity to target it.'}
+            </p>
           {:else}
             <div class="divider"><span>STATS</span></div>
             {#if v == "construction"}
@@ -3096,6 +3099,21 @@
             >
               <span class="rarity-bar" style="background:{RARITY_COLORS[meta.rarity]}"></span>
               <div class="card-cost"><i class="ra ra-crystal-ball"></i>{card.cost}</div>
+              {#if myTurn && !winner}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <button
+                  class="reroll-btn"
+                  type="button"
+                  title="Reroll ({REROLL_COST} mana)"
+                  disabled={players[turn].mana < REROLL_COST}
+                  onmousedown={e => e.stopPropagation()}
+                  ondragstart={e => e.preventDefault()}
+                  onclick={e => rerollSlot(i, k, e)}
+                >
+                  <i class="ra ra-recycle"></i>
+                  <span class="reroll-cost">{REROLL_COST}</span>
+                </button>
+              {/if}
               <i class="ra {meta.icon}" style="color:{meta.color}"></i>
               <span class="card-label">{card.name}</span>
               {#if k === 'creature'}
@@ -3383,6 +3401,18 @@
   .hand-card.casting-card-no-target:hover { border-color: #a060c0aa; box-shadow: 0 16px 36px rgba(160,96,192,0.25); }
   .card-cost { position: absolute; top: 5px; left: 7px; font-size: 0.78rem; font-family: 'Cinzel', serif; color: #80b4e0; display: flex; align-items: center; gap: 2px; }
   .card-cost i { font-size: 0.72rem; }
+  .reroll-btn {
+    position: absolute; top: 4px; right: 4px; z-index: 2;
+    display: flex; align-items: center; gap: 2px;
+    padding: 2px 5px; font-size: 0.7rem; font-family: 'Cinzel', serif;
+    color: #d0b060; background: rgba(20,14,8,0.85); border: 1px solid #4a3a20;
+    border-radius: 4px; cursor: pointer; line-height: 1;
+    transition: background 0.15s, transform 0.12s, border-color 0.15s;
+  }
+  .reroll-btn i { font-size: 0.78rem; }
+  .reroll-btn:hover:not(:disabled) { background: #2a1e0c; border-color: #c0a040; transform: scale(1.1); }
+  .reroll-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .reroll-cost { font-size: 0.68rem; }
   .card-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: #c0b080; text-align: center; pointer-events: none; line-height: 1.35; padding: 0 4px; }
   .card-stats { display: flex; gap: 7px; font-size: 0.72rem; color: #605070; pointer-events: none; }
   .casting-tag { color: #907020; font-style: italic; font-size: 0.7rem; }
