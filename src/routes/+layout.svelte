@@ -2339,10 +2339,15 @@
 
   function wsUrl(): string {
     if (typeof window === 'undefined') return '';
-    const envUrl = (import.meta.env.VITE_WS_URL as string | undefined) ?? '';
-    if (envUrl) return envUrl;
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.hostname}:8080`;
+    const pageProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const raw = ((import.meta.env.VITE_WS_URL as string | undefined) ?? '').trim();
+    if (raw) {
+      if (/^wss?:\/\//i.test(raw)) return raw;
+      if (/^https?:\/\//i.test(raw)) return raw.replace(/^http/i, 'ws');
+      // Bare hostname — assume secure if the page is served over https.
+      return `${pageProto}//${raw.replace(/^\/+/, '')}`;
+    }
+    return `${pageProto}//${window.location.hostname}:8080`;
   }
 
   function connectWS(): void {
