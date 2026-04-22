@@ -12,7 +12,7 @@
 
   type EntityId   = number;
   type LogMessage = string | null;
-  type EventSource = EntityId | "player" | "system";
+  type EventSource = EntityId | PlayerId | "player" | "system";
   type EventTarget = EntityId | "none" | "player_A" | "player_B" | "all";
 
   type PlayCardResult = "ok" | "not_enough_mana" | "invalid_coords" | "invalid_target";
@@ -23,7 +23,7 @@
   type PlayerId       = "A" | "B";
   type CardType = "creature" | "construction" | "casting";
 
-  type Attribute = "undead" | "human" | "magic" | "has potion";
+  type Attribute = "undead" | "human" | "magic" | "has_potion" | "beast";
 
   interface Coords {
     x: number;
@@ -69,6 +69,7 @@
     played:                     "on_played",
     killed:                     "on_killed",
     moved:                      "on_moved",
+    spawned:                    "on_spawned",
     turn_start:                 "on_turn_start",
     turn_end:                   "on_turn_end",
     cast:                       "on_cast",
@@ -122,7 +123,15 @@
     target: EventTarget;
   };
 
-  type GameEvent = AmountEvent | MoveEvent | CastEvent | CastleEvent | TurnEvent | SimpleEvent;
+  type SpawnEvent = BaseFields & {
+    trigger:    typeof EventTime.spawned;
+    target:     EntityId;
+    entity:     Entity;
+    where:      Coords;
+    controller: PlayerId;
+  };
+
+  type GameEvent = AmountEvent | MoveEvent | CastEvent | CastleEvent | TurnEvent | SimpleEvent | SpawnEvent;
 
   // ============================================================
   // ABILITIES
@@ -214,7 +223,7 @@
     base_hp:          number = $state(0);
     remaining_hp:     number = $state(0);
     base_energy:      number = $state(0);
-    energy_remaining: number = $state(0);
+    remaining_energy: number = $state(0);
     abilities:        Ability[];
     attributes:       Attribute[];
 
@@ -233,7 +242,7 @@
       this.base_hp          = hp;
       this.remaining_hp     = hp;
       this.base_energy      = energy;
-      this.energy_remaining = energy;
+      this.remaining_energy = energy;
       this.abilities        = abilities;
       this.attributes       = attributes;
     }
@@ -473,7 +482,7 @@
       } else {
         if (entityAt) return "invalid_coords";
         this.players[caster].mana -= card.cost;
-        const spawned = this.spawn(card as (CreatureTemplate | ConstructionTemplate), caster, where);
+        const spawned = this.spawn(card as (CreatureTemplate | ConstructionTemplate), caster, where, "player");
         castTarget = spawned.id;
         this.draw(cardIndex, kind);
         followups = [{ trigger: EventTime.played, source: "player", target: spawned.id }];
@@ -623,8 +632,8 @@
           const defender = typeof e.target === "number" ? this.getEntity(e.target) : null;
           if (!attacker || !defender) break;
           if (!(attacker.entity instanceof Creature)) break;
-          if (attacker.entity.energy_remaining <= 0) break;
-          attacker.entity.energy_remaining--;
+          if (attacker.entity.remaining_energy <= 0) break;
+          attacker.entity.remaining_energy--;
           const atkDmg = this.calculateDamage(attacker.entity.attack, defender.entity.defense);
           this.emit(`${attacker.description} attacks ${defender.description} for ${atkDmg}.`);
           followups.push({
@@ -633,6 +642,12 @@
             target:  e.target,
             amount:  atkDmg,
           } as AmountEvent);
+          break;
+        }
+
+        case EventTime.spawned: {
+          const e = event as SpawnEvent;
+          this.emit(`${e.controller} summons ${e.entity.description} at (${e.where.x},${e.where.y}).`);
           break;
         }
 
@@ -655,7 +670,12 @@
     // PUBLIC ACTIONS
     // ----------------------------------------------------------
 
-    spawn(template: CreatureTemplate | ConstructionTemplate, controller: PlayerId, where: Coords): Entity {
+    spawn(
+      template: CreatureTemplate | ConstructionTemplate,
+      controller: PlayerId,
+      where: Coords,
+      source: EventSource = "system",
+    ): Entity {
       const isCreature = "attack" in template;
       const entity: Entity = {
         id:          this.next_id++,
@@ -665,7 +685,17 @@
           ? Creature.from_template(template as CreatureTemplate)
           : Construction.from_template(template as ConstructionTemplate),
       };
+      // Place first so MODIFY/REACT handlers (including the spawned entity's own
+      // abilities) see it on the grid. RESOLVE just logs.
       this.placeEntity(entity, where);
+      this.triggerEvent({
+        trigger:    EventTime.spawned,
+        source,
+        target:     entity.id,
+        entity,
+        where,
+        controller,
+      } as SpawnEvent);
       return entity;
     }
 
@@ -681,7 +711,7 @@
       const attacker = this.getEntity(attackerId);
       if (!attacker) return;
       if (!(attacker.entity instanceof Creature)) return;
-      if (attacker.entity.energy_remaining <= 0) return;
+      if (attacker.entity.remaining_energy <= 0) return;
       this.triggerEvent({
         trigger: EventTime.deal_damage,
         source:  attackerId,
@@ -694,8 +724,8 @@
       const entity = this.getEntity(entityId);
       if (!entity) return;
       if (entity.entity instanceof Creature) {
-        if (entity.entity.energy_remaining <= 0) return;
-        entity.entity.energy_remaining--;
+        if (entity.entity.remaining_energy <= 0) return;
+        entity.entity.remaining_energy--;
       }
       const from = this.findCoords(entityId);
       if (!from) return;
@@ -726,7 +756,7 @@
 
       for (const entity of this.allEntities()) {
         if (entity.controller === this.turn && entity.entity instanceof Creature) {
-          entity.entity.energy_remaining = entity.entity.base_energy;
+          entity.entity.remaining_energy = entity.entity.base_energy;
         }
       }
 
@@ -814,6 +844,36 @@
           amount:  -2,
           log:     `Healing Aura restores 2 hp to ${e.description}.`,
         } as AmountEvent));
+    },
+  };
+
+  const UndeadMaster: Ability = {
+    name:        "Undead Master",
+    description: "When one of your creatures kills a non-undead creature, raise it as a Zombie under your control.",
+    trigger:     EventTime.killed,
+    react(state, event, selfId): GameEvent[] {
+      const self = state.getEntity(selfId);
+      if (!self) return [];
+      const owner = self.controller;
+
+      if (typeof event.target !== "number") return [];
+      if (event.target === selfId)          return [];
+      const victim = state.getEntity(event.target);
+      if (!victim)                              return [];
+      if (!(victim.entity instanceof Creature)) return [];
+      if (victim.entity.attributes.includes("undead")) return [];
+
+      if (typeof event.source !== "number") return [];
+      const killer = state.getEntity(event.source);
+      if (!killer || killer.controller !== owner) return [];
+
+      const coords = state.findCoords(event.target);
+      if (!coords) return [];
+
+      state.removeEntity(event.target);
+      const zombie = state.spawn(Zombie, owner, coords, selfId);
+      state.log.push(`Undead Master raises ${victim.description} as ${zombie.description} under ${owner}'s control.`);
+      return [];
     },
   };
 
@@ -929,30 +989,12 @@
       const self = state.getEntity(selfId);
       if (!self || !(self.entity instanceof Creature)) return [];
       self.entity.base_energy      += 1;
-      self.entity.energy_remaining += 1;
+      self.entity.remaining_energy += 1;
       self.entity.attack           += 1;
       self.entity.base_hp          += 2;
       self.entity.remaining_hp     += 2;
       state.log.push(`${self.description} regrows — now ${self.entity.attack} atk / ${self.entity.remaining_hp} hp / ${self.entity.base_energy} energy.`);
       return [];
-    },
-  };
-
-  const castleVengeance: Ability = {
-    name:        "Castle Vengeance",
-    description: "When castle control changes, deal 3 damage to the player who lost it.",
-    trigger:     EventTime.change_castle_control,
-    react(_state, event, selfId): GameEvent[] {
-      const e = event as CastleEvent;
-      if (!e.old_controller) return [];
-      const target: EventTarget = e.old_controller === "A" ? "player_A" : "player_B";
-      return [{
-        trigger: EventTime.take_damage,
-        source:  selfId,
-        target,
-        amount:  3,
-        log:     `Castle Vengeance deals 3 damage to player ${e.old_controller}.`,
-      } as AmountEvent];
     },
   };
 
@@ -1008,12 +1050,6 @@
       return [];
     },
   };
-
-  // ── WIP abilities: implementations based on design notes ─────
-
-  function hasAttribute(e: Entity, attr: Attribute): boolean {
-    return e.entity instanceof Creature && e.entity.attributes.includes(attr);
-  }
 
   const thinksFireIsAToy: Ability = {
     name:        "Plays With Fire",
@@ -1124,9 +1160,9 @@
       if (!self || !victim) return [];
       if (!(self.entity instanceof Creature))   return [];
       if (!(victim.entity instanceof Creature)) return [];
-      victim.entity.energy_remaining = Math.max(0, victim.entity.energy_remaining - 1);
+      victim.entity.remaining_energy = Math.max(0, victim.entity.remaining_energy - 1);
       state.log.push(`Blood Sucker drains 1 energy from ${victim.description}.`);
-      if (victim.entity.energy_remaining <= 0) {
+      if (victim.entity.remaining_energy <= 0) {
         self.entity.attack += 1;
         state.log.push(`${self.description} feasts — +1 attack.`);
         return [{
@@ -1196,7 +1232,7 @@
       for (const neighbour of adjacentEntities(state, origin)) {
         if (neighbour.controller !== self.controller) continue;
         if (!(neighbour.entity instanceof Creature)) continue;
-        if (neighbour.entity.attributes.includes("has potion")) continue;
+        if (neighbour.entity.attributes.includes("has_potion")) continue;
         neighbour.entity.attack  += 3;
         neighbour.entity.defense += 3;
         state.log.push(`Give Potion: ${neighbour.description} gains +3 atk/+3 def.`);
@@ -1217,7 +1253,7 @@
       for (const e of state.allEntities()) {
         if (e.controller !== self.controller) continue;
         if (!(e.entity instanceof Creature)) continue;
-        if (!e.entity.attributes.includes("has potion")) continue;
+        if (!e.entity.attributes.includes("has_potion")) continue;
         e.entity.attack  -= 4;
         e.entity.defense -= 4;
         e.entity.attack = Math.max(0, e.entity.attack);
@@ -1276,7 +1312,7 @@
         abilities: self.entity.abilities,
         attributes: [...self.entity.attributes],
       };
-      state.spawn(tpl, self.controller, spot);
+      state.spawn(tpl, self.controller, spot, selfId);
       state.log.push(`Self-Replicate: ${self.description} spawns a copy at (${spot.x},${spot.y}).`);
       return [];
     },
@@ -1508,7 +1544,7 @@
       if ((event as TurnEvent).player !== owner) return [];
       const pick = randomOf(ownedCreatures(state, owner));
       if (!pick) return [];
-      (pick.entity as Creature).energy_remaining += 1;
+      (pick.entity as Creature).remaining_energy += 1;
       state.log.push(`[Pact] Warmonger: ${pick.description} surges with extra energy.`);
       return [];
     },
@@ -1680,7 +1716,7 @@
       if (typeof tid !== "number") return [];
       const ent = state.getEntity(tid);
       if (!ent || ent.controller !== owner || !(ent.entity instanceof Creature)) return [];
-      ent.entity.energy_remaining = 0;
+      ent.entity.remaining_energy = 0;
       state.log.push(`[Pact] Weary: ${ent.description} enters exhausted.`);
       return [];
     },
@@ -1930,6 +1966,61 @@
     flavor: "flatten the curve before its too late",
   }
 
+  const trainedFighter: CreatureTemplate = {
+    kind: "creature",
+    name: "Trained Fighter", cost: 2,
+    attack: 2, defense: 2, hp: 2 * HP_MULT, energy: 1,
+    icon: 'ra-muscle-up', rarity: 'common',
+    attributes: ["human"],
+    abilities: [],
+    flavor: "his sword has your name on it",
+  }
+
+  const WickedLeader: CreatureTemplate = {
+    kind: "creature",
+    name: "Wicked Leader", cost: 2,
+    attack: 2, defense: 2, hp: 2 * HP_MULT, energy: 2,
+    icon: 'ra-venomous-snake', rarity: 'common',
+    abilities: [],
+    flavor: "who elected this guy",
+  }
+
+  const Shark: CreatureTemplate = {
+    kind: "creature",
+    name: "Shark", cost: 3,
+    attack: 4, defense: 3, hp: 3 * HP_MULT, energy: 1,
+    icon: 'ra-shark', rarity: 'common', attributes: ['beast'],
+    abilities: [],
+    flavor: "swims and stuff idk",
+  }
+
+  const RocketShip: CreatureTemplate = {
+    kind: "creature",
+    name: "Rocket Ship", cost: 3,
+    attack: 5, defense: 2, hp: 3 * HP_MULT, energy: 2,
+    abilities: [],
+    icon: 'ra-ship-emblem', rarity: 'common',
+    flavor: "Traveled back in time to clean up your mess",
+  }
+
+  const Skeleton: CreatureTemplate = {
+    kind: "creature",
+    name: "skeleton", cost: 3,
+    attack: 0, defense: 1, hp: 2 * HP_MULT, energy: 1,
+    abilities: [coveringFire],
+    icon: 'ra-broken-skull', rarity: 'uncommon',
+    flavor: "always has a bow and arrow for some reason",
+  }
+
+  const Lich: CreatureTemplate = {
+    kind: "creature",
+    name: "Lich", cost: 6,
+    attack: 6, defense: 4, hp: 10 * HP_MULT, energy: 2,
+    abilities: [UndeadMaster],
+    icon: 'ra-alien-fire', rarity: 'legendary',
+    flavor: "lived long enough to become the vilan",
+  }
+
   const creatures: CreatureTemplate[] = [
     CursedWarriorTemplate,
     SoulHarvesterTemplate,
@@ -1951,6 +2042,10 @@
     PotionDealer,
     CrazySorcerress,
     Germ,
+    trainedFighter,
+    WickedLeader,
+    Shark,
+    RocketShip,
   ];
 
   // ============================================================
@@ -2083,7 +2178,7 @@
     },
     onPlay(state, _caster, target): GameEvent[] {
       if (!target || !(target.entity instanceof Creature)) return [];
-      target.entity.energy_remaining = target.entity.base_energy;
+      target.entity.remaining_energy = target.entity.base_energy;
       state.log.push(`Haste restores ${target.description} to full energy (${target.entity.base_energy}).`);
       return [];
     },
@@ -2192,6 +2287,58 @@
     flavor: "go get em",
   };
 
+  const SolarPanels: CastingTemplate = {
+    kind:   "casting",
+    name:   "Atatch Solar Panels",
+    cost:   10,
+    description: "Grant a creature +1 energy",
+    targeting: {
+      kind: "target",
+      isLegal: (_s, caster, candidate) =>
+        candidate.entity instanceof Creature && candidate.controller === caster,
+    },
+    onPlay(state, _caster, target): GameEvent[] {
+      if (!target) { return []; }
+      const c = target.entity as Creature;
+      c.abilities.push(Smite);
+      c.base_energy += 1;
+      c.remaining_energy += 1
+      state.log.push(`Attatched solar panels granting +1 energy to ${target.description}`);
+      return [];
+    },
+    icon:   "ra-moon-sun",
+    color:  "#507090",
+    rarity: "common",
+    flavor: "go get em",
+  };
+
+  const Genocide: CastingTemplate = {
+    kind: "casting",
+    name:   "Genocide",
+    cost:   4,
+    description: "Kill all entities with the same name as target",
+    targeting: {
+      kind: "target",
+      isLegal: (_state, _caster, candidate) =>
+        candidate instanceof Creature || cancelAnimationFrame instanceof Construction,
+    },
+    onPlay(state, _caster, target): GameEvent[] {
+      if (!target) return [];
+      return state
+        .allEntities()
+        .filter((e) => e.entity.name === target.entity.name)
+        .map((e) => ({
+            trigger: EventTime.killed,
+            source:  "system",
+            target:  e.id,
+            log:     `Genocide Kills ${e.entity.name}.`,
+          }) as GameEvent);
+    },
+    icon:   "ra-pills",
+    color:  "#2080c0",
+    rarity: "uncommon",
+    flavor: "Move again. The enemy won't see it coming.",
+  };
 
   const castings: CastingTemplate[] = [
     LightningBoltTemplate,
@@ -2200,6 +2347,8 @@
     IronSkinTemplate,
     Necromancy,
     HolyBoon,
+    SolarPanels,
+    Genocide,
   ];
 
   // ── Constants ───────────────────────────────────────────────────────────────
@@ -2230,9 +2379,10 @@
   const ABILITY_REGISTRY: Record<string, Ability> = {};
   for (const ab of [
     healingAura, damageShield, Smite, deathCurse, gainManaOnDeath, thornAura,
-    warCry, RegeneratingHeads, castleVengeance, coveringFire, manaSpring,
+    warCry, RegeneratingHeads, coveringFire, manaSpring,
     thinksFireIsAToy, Key, Sacred, Reflection, BloodSucker, Fixing, Leadership,
     GivePotion, TakePotion, PowerCreep, SelfReplicate, Detonate, MagicEducation,
+    UndeadMaster,
   ]) { ABILITY_REGISTRY[ab.name] = ab; }
 
   const PASSIVE_REGISTRY: Record<string, Passive> = {};
@@ -2256,7 +2406,7 @@
     if (inner instanceof Creature) {
       base.attack = inner.attack;
       base.base_energy = inner.base_energy;
-      base.energy_remaining = inner.energy_remaining;
+      base.energy_remaining = inner.remaining_energy;
     }
     return { id: e.id, controller: e.controller, description: e.description, inner: base };
   }
@@ -2269,7 +2419,7 @@
     if (i.kind === "creature") {
       const c = new Creature(i.name, i.attack, i.defense, i.base_hp, i.base_energy, abilities, i.attributes);
       c.remaining_hp = i.remaining_hp;
-      c.energy_remaining = i.energy_remaining;
+      c.remaining_energy = i.energy_remaining;
       inner = c;
     } else {
       inner = new Construction(i.name, i.defense, i.base_hp, abilities, i.attributes);
@@ -2478,7 +2628,8 @@
     undead:       { icon: 'ra-skull',       color: '#a080c0', description: 'Counts as undead for effects that care (e.g. Necromancy, holy damage).' },
     human:        { icon: 'ra-player',      color: '#d0b080', description: 'Counts as human for effects that target humans.' },
     magic:        { icon: 'ra-crystal-ball',color: '#80a0ff', description: 'Counts as magical for effects that target magic.' },
-    'has potion': { icon: 'ra-round-potion',color: '#60c080', description: 'Carries a potion that can be consumed or stolen.' },
+    has_potion:   { icon: 'ra-round-potion',color: '#60c080', description: 'Drank the kool aid' },
+    beast:        { icon: 'ra-wolf-head',   color: 'gray', description: 'Carries a potion that can be consumed or stolen.' },
   };
 
   let inspected: Inspected = $state(null);
@@ -2506,7 +2657,7 @@
     const entity = grid[cellIdx];
     if (!entity || entity.controller !== turn) { e.preventDefault(); return; }
     const creature = entity.entity instanceof Creature ? entity.entity : null;
-    if (!creature || creature.energy_remaining <= 0) { e.preventDefault(); return; }
+    if (!creature || creature.remaining_energy <= 0) { e.preventDefault(); return; }
     dragMode   = 'move';
     dragFromId = entity.id;
     e.dataTransfer!.effectAllowed = 'move';
@@ -2878,8 +3029,8 @@
               </li>
               <li class="stat-row">
                 <span class="stat-k">ENERGY</span>
-                <span class="stat-v" style="color:{creature.energy_remaining > 0 ? '#80d090' : '#d05050'}">
-                  {creature.energy_remaining}/{creature.base_energy}
+                <span class="stat-v" style="color:{creature.remaining_energy > 0 ? '#80d090' : '#d05050'}">
+                  {creature.remaining_energy}/{creature.base_energy}
                 </span>
               </li>
             {:else}
@@ -2933,7 +3084,7 @@
               {/each}
             </ul>
           {/if}
-          {#if creature && creature.energy_remaining <= 0}
+          {#if creature && creature.remaining_energy <= 0}
             <p class="exhausted-note">No energy — cannot act this turn</p>
           {/if}
         </div>
@@ -3010,7 +3161,7 @@
               cell.controller === turn &&
               myTurn &&
               entityType == "creature" &&
-              (entity as Creature).energy_remaining > 0
+              (entity as Creature).remaining_energy > 0
           }
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -3032,7 +3183,7 @@
             {#if cell && meta}
               <i
                 class="ra {meta.icon} ent-icon"
-                class:exhausted={entityType == "creature" && (entity as Creature).energy_remaining <= 0}
+                class:exhausted={entityType == "creature" && (entity as Creature).remaining_energy <= 0}
                 style="color:{meta.color}; filter:drop-shadow(0 0 8px {meta.color}66)"
               ></i>
               <div class="hp-bar-wrap">
@@ -3046,7 +3197,7 @@
                 <span class="atk-badge">{c.attack}</span>
                 <div class="energy-pips">
                   {#each { length: c.base_energy } as _, e}
-                    <span class="pip" class:pip-spent={e >= c.energy_remaining}></span>
+                    <span class="pip" class:pip-spent={e >= c.remaining_energy}></span>
                   {/each}
                 </div>
               {:else if entityType == "construction"}
