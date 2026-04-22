@@ -1000,7 +1000,7 @@
   const thinksFireIsAToy: Ability = {
     name:        "Plays With Fire",
     description: "When attacking, deal equal damage to all adjacent enemies as well.",
-    trigger:     EventTime.take_damage,
+    trigger:     EventTime.deal_damage,
     react(state, event, selfId): GameEvent[] {
       const e = event as AmountEvent;
       if (e.source !== selfId) return [];
@@ -1011,16 +1011,14 @@
       if (!victim) return [];
       const victimCoords = state.findCoords(e.target);
       if (!victimCoords) return [];
-      return adjacentEntities(state, victimCoords)
-        .filter(n => n.id !== e.target && n.id !== selfId && n.controller !== state.getEntity(selfId)?.controller)
-        .map(n => ({
+      return [{
           trigger: EventTime.take_damage,
           source:  selfId,
-          target:  n.id,
+          target:  selfId,
           amount:  e.amount,
-          log:     `Plays With Fire splashes ${n.description} for ${e.amount}.`,
+          log:     `the pyromaniac burned himself for ${e.amount}.`,
           _splash: true,
-        } as unknown as AmountEvent));
+        } as AmountEvent];
     },
   };
 
@@ -1215,10 +1213,10 @@
 
   const PowerCreep: Ability = {
     name:        "Power Creep",
-    description: "When played, deal 2 damage to each adjacent creature and gain attack equal to the damage dealt.",
-    trigger:     EventTime.played,
+    description: "At the start of the turn, deal 2 damage to each adjacent creature and gain attack equal to the damage dealt.",
+    trigger:     EventTime.turn_start,
     react(state, event, selfId): GameEvent[] {
-      if (event.target !== selfId) return [];
+      if ((event as TurnEvent).player !== state.turn) { return []; }
       const self = state.getEntity(selfId);
       const origin = state.findCoords(selfId);
       if (!self || !origin) return [];
@@ -1720,10 +1718,12 @@
   // CREATURE TEMPLATES
   // ============================================================
 
+  const HP_MULT = 2;
+
   const CursedWarriorTemplate: CreatureTemplate = {
     kind: "creature",
     name: "Cursed Warrior", cost: 3,
-    attack: 4, defense: 1, hp: 5, energy: 1,
+    attack: 4, defense: 1, hp: 5 * HP_MULT, energy: 1,
     abilities: [deathCurse],
     icon: "ra-axe", color: "#c05555", rarity: "rare",
     flavor: "Death follows in its wake.",
@@ -1732,7 +1732,7 @@
   const SoulHarvesterTemplate: CreatureTemplate = {
     kind: "creature",
     name: "Soul Harvester", cost: 2,
-    attack: 2, defense: 0, hp: 3, energy: 1,
+    attack: 2, defense: 0, hp: 3 * HP_MULT, energy: 1,
     abilities: [gainManaOnDeath],
     icon: "ra-skull", color: "#9060c0", rarity: "uncommon",
     flavor: "It feeds on the moment of passing.",
@@ -1741,7 +1741,7 @@
   const HealerTemplate: CreatureTemplate = {
     kind: "creature",
     name: "Healer", cost: 4,
-    attack: 1, defense: 1, hp: 4, energy: 1,
+    attack: 1, defense: 1, hp: 4 * HP_MULT, energy: 1,
     abilities: [healingAura, Smite],
     icon: "ra-angel-wings", color: "#50b080", rarity: "uncommon",
     flavor: "Light pours from every wound it touches.",
@@ -1750,7 +1750,7 @@
   const ShieldBearerTemplate: CreatureTemplate = {
     kind: "creature",
     name: "Shield Bearer", cost: 2,
-    attack: 2, defense: 2, hp: 6, energy: 1,
+    attack: 2, defense: 2, hp: 6 * HP_MULT, energy: 1,
     abilities: [damageShield],
     icon: "ra-shield", color: "#4080c0", rarity: "common",
     flavor: "No blade has found its mark. Not yet.",
@@ -1759,7 +1759,7 @@
   const ThornWatcherTemplate: CreatureTemplate = {
     kind: "creature",
     name: "Thorn Watcher", cost: 3,
-    attack: 1, defense: 1, hp: 4, energy: 1,
+    attack: 1, defense: 1, hp: 4 * HP_MULT, energy: 1,
     abilities: [thornAura],
     icon: "ra-thorned-arrow", color: "#80a040", rarity: "uncommon",
     flavor: "Stand too close and bleed.",
@@ -1768,7 +1768,7 @@
   const WarChieftainTemplate: CreatureTemplate = {
     kind: "creature",
     name: "War Chieftain", cost: 4,
-    attack: 3, defense: 1, hp: 4, energy: 1,
+    attack: 3, defense: 1, hp: 4 * HP_MULT, energy: 1,
     abilities: [warCry],
     icon: "ra-viking-head", color: "#c08040", rarity: "rare",
     flavor: "One roar and the whole army surges forward.",
@@ -1777,7 +1777,7 @@
   const RegularDude: CreatureTemplate = {
     kind: "creature",
     name: "Regular Dude", cost: 1,
-    attack: 1, defense: 1, hp: 2, energy: 2,
+    attack: 1, defense: 1, hp: 2 * HP_MULT, energy: 2,
     abilities: [],
     icon: "ra-fox", color: "green", rarity: "common",
     flavor: "More common than rats these days",
@@ -1786,7 +1786,7 @@
   const Hydra: CreatureTemplate = {
     kind: "creature",
     name: "Hydra", cost: 10,
-    attack: 1, defense: 5, hp: 40, energy: 5,
+    attack: 1, defense: 5, hp: 20 * HP_MULT, energy: 5,
     abilities: [RegeneratingHeads],
     icon: "ra-hydra", color: "green", rarity: "legendary",
     flavor: "and now it has 6 heads",
@@ -1795,7 +1795,7 @@
   const Dragon: CreatureTemplate = {
     kind: "creature",
     name: "Dragon", cost: 8,
-    attack: 6, defense: 8, hp: 20, energy: 1,
+    attack: 6, defense: 8, hp: 10 * HP_MULT, energy: 1,
     abilities: [],
     icon: "ra-wyvern", color: "red", rarity: "legendary",
     flavor: "It can't be real becomes if it was there would have been noone to start the stories",
@@ -1804,7 +1804,7 @@
   const Nerd: CreatureTemplate = {
     kind: "creature",
     name: "Government Worker", cost: 1,
-    attack: 0, defense: 0, hp: 1, energy: 1,
+    attack: 0, defense: 0, hp: 1 * HP_MULT, energy: 1,
     abilities: [manaSpring],
     icon: "ra-player", color: "blue", rarity: "common",
     flavor: "he can't fight but he contributes in his own way",
@@ -1813,8 +1813,8 @@
   const Pyromaniac: CreatureTemplate = {
     kind: "creature",
     name: "pyromaniac", cost: 1,
-    attack: 3, defense: 0, hp: 6, energy: 2,
-    //deal equal damage to all adjacent creatures when attacking
+    attack: 3, defense: 0, hp: 6 * HP_MULT, energy: 2,
+    //deal equal damage to self when attacking
     abilities: [thinksFireIsAToy],
     icon: "ra-player-pyromaniac", rarity: "uncommon",
     flavor: "already burned his own village down to feel its warmth, now he is on to yours",
@@ -1823,7 +1823,7 @@
   const TheChosenOne: CreatureTemplate = {
     kind: "creature",
     name: "The Chosen One", cost: 2,
-    attack: 1, defense: 1, hp: 1, energy: 1,
+    attack: 1, defense: 1, hp: 1 * HP_MULT, energy: 1,
     //Key: get +10 to all stats except energy the first time it takes the castle
     //Sacred: all allies take 1 damage when killed
     abilities: [Smite, Key, Sacred],
@@ -1834,7 +1834,7 @@
   const Mirror: CreatureTemplate = {
     kind: "creature",
     name: "mirror", cost: 3,
-    attack: -1, defense: -1, hp: 1, energy: 1,
+    attack: -1, defense: -1, hp: 2 * HP_MULT, energy: 1,
     //Reflection: use enemies attack when attacking and enemies defense when taking damage
     abilities: [Reflection],
     icon: "ra-mirror", rarity: "rare", attributes: ["magic"],
@@ -1844,7 +1844,7 @@
   const Zombie: CreatureTemplate = {
     kind: "creature",
     name: "Zombie", cost: 1,
-    attack: 1, defense: 0, hp: 2, energy: 1,
+    attack: 1, defense: 0, hp: 2 * HP_MULT, energy: 1,
     icon: "ra-monster-skull",
     abilities: [], attributes: ["undead"],
     flavor: "AHHHHHHHH HE IS COMING FOR MY BRAIN BRO",
@@ -1853,7 +1853,7 @@
   const Vampire: CreatureTemplate = {
     kind: "creature",
     name: "Vampire", cost: 4,
-    attack: 4, defense: 3, hp: 3, energy: 1,
+    attack: 4, defense: 3, hp: 3 * HP_MULT, energy: 1,
     icon: "ra-monster-skull", rarity: "uncommon",
     // BloodSucker: reduce target energy by 1 when attacking. If this reduces them to 0
     //, kill them. Ability does not apply to constructions (creature can still attack them but the ability will have no effect)
@@ -1865,7 +1865,7 @@
   const Tinkerer: CreatureTemplate = {
     kind: "creature",
     name: "Tinkerer", cost: 1,
-    attack: 1, defense: 1, hp: 2, energy: 1,
+    attack: 1, defense: 1, hp: 2 * HP_MULT, energy: 1,
     icon: 'ra-wrench', rarity: "rare",
     //heal adjaced constructions by 2 at start of round
     abilities: [Fixing], attributes: ["human"],
@@ -1875,7 +1875,7 @@
   const King: CreatureTemplate = {
     kind: "creature",
     name: "The King", cost: 3,
-    attack: 3, defense: 3, hp: 3, energy: 1,
+    attack: 3, defense: 3, hp: 3 * HP_MULT, energy: 1,
     icon: 'ra-player-king', rarity: "legendary",
     //leadership: grant +1 defense to adjacent allied creatures
     abilities: [Leadership, Sacred], attributes: ["human"],
@@ -1885,7 +1885,7 @@
   const PotionDealer: CreatureTemplate = {
     kind: "creature",
     name: "Potion Dealer", cost: 2,
-    attack: 1, defense: 1, hp: 1, energy: 1,
+    attack: 1, defense: 1, hp: 2 * HP_MULT, energy: 1,
     icon: 'ra-bottle-vapors', rarity: "uncommon",
     //Give potion: give +3 attack and +3 defense to adjacent allied creatures (once per receving creatures)
     //When he dies: give -4 attack and -4 defense to all creatures that received
@@ -1896,7 +1896,7 @@
   const CrazySorcerress: CreatureTemplate = {
     kind: "creature",
     name: "Crazy Sorcerress", cost: 6,
-    attack: 0, defense: 3, hp: 1, energy: 1,
+    attack: 0, defense: 3, hp: 2 * HP_MULT, energy: 1,
     icon: 'ra-player-thunder-struck', rarity: "rare",
     //Power creep: deal 2 damage to all adjacent creatures and gain attack equal to the damage dealt
     abilities: [PowerCreep], attributes: ["human", "magic"],
@@ -1906,7 +1906,7 @@
   const Germ: CreatureTemplate = {
     kind: "creature",
     name: "The Plague", cost: 1,
-    attack: 1, defense: 0, hp: 1, energy: 2,
+    attack: 1, defense: 0, hp: 0.5 * HP_MULT, energy: 2,
     icon: 'ra-crown-of-thorns', rarity: "common",
     //start of round, spawn a copy of self in an adject square
     abilities: [SelfReplicate],
