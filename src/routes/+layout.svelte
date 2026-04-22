@@ -342,7 +342,7 @@
   const HAND_SIZE = 4;
 
   class GameState {
-    private next_id: number = 0;
+    next_id: number = 0;
     turnNumber:      number = $state(1);
     grid:            (Entity | null)[] = $state(Array(NUM_CELLS).fill(null));
     players:         Record<PlayerId, PlayerState> = $state({} as Record<PlayerId, PlayerState>);
@@ -2302,6 +2302,7 @@
     return {
       turn: s.turn,
       turnNumber: s.turnNumber,
+      next_id: s.next_id,
       log: [...s.log],
       grid: s.grid.map(serializeEntity),
       players: {
@@ -2319,6 +2320,7 @@
     const s = new GameState(makeDeck());
     s.turn       = dto.turn;
     s.turnNumber = dto.turnNumber;
+    s.next_id    = dto.next_id ?? 0;
     s.log        = [...dto.log];
     s.grid       = dto.grid.map(rehydrateEntity);
     const pA = new PlayerState('A', dto.players.A.mana, dto.players.A.castleHolds);
