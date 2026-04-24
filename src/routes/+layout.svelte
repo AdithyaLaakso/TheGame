@@ -78,6 +78,13 @@
 
   type EventTime = typeof EventTime[keyof typeof EventTime];
 
+  const EventMoment = {
+    before: "before",
+    after:  "after",
+  } as const;
+
+  type EventMoment = typeof EventMoment[keyof typeof EventMoment];
+
   // ============================================================
   // EVENTS
   // ============================================================
@@ -300,7 +307,7 @@
   }
 
   class Deck {
-    cards: Record<CardType, Playable[]>;
+    cards: Record<CardType, (Playable | null)[]>;
     i_vals: Record<CardType, number> = {
       casting: 0,
       creature: 0,
@@ -333,7 +340,7 @@
       let i = this.i_vals[kind];
       this.i_vals[kind]++;
       let mod = this.cards[kind].length;
-      return this.cards[kind][i % mod];
+      return this.cards[kind][i % mod] as Playable;
     }
 
     numCards(): number {
@@ -479,13 +486,13 @@
         }
         this.players[caster].mana -= card.cost;
         followups = casting.onPlay(this, caster, resolved);
-        this.draw(cardIndex, kind);
+        this.reserves[caster].cards[kind][cardIndex] = null;
       } else {
         if (entityAt) return "invalid_coords";
         this.players[caster].mana -= card.cost;
         const spawned = this.spawn(card as (CreatureTemplate | ConstructionTemplate), caster, where, "player");
         castTarget = spawned.id;
-        this.draw(cardIndex, kind);
+        this.reserves[caster].cards[kind][cardIndex] = null;
         followups = [{ trigger: EventTime.played, source: "player", target: spawned.id }];
       }
 
@@ -582,9 +589,15 @@
               const src = typeof e.source === "number" ? this.getEntity(e.source) : null;
               const fromClause = src && src.id !== entity.id ? ` from ${src.description}` : "";
               if (e.amount > 0) {
+                const prevHp = entity.entity.remaining_hp;
                 entity.entity.remaining_hp -= e.amount;
                 this.emit(`${entity.description} takes ${e.amount} damage${fromClause} → ${entity.entity.remaining_hp}/${entity.entity.base_hp} hp`);
-                if (entity.entity.remaining_hp <= 0) {
+                // Only enqueue `killed` on the alive→dead transition. Without this
+                // guard, a dying entity that is still on the grid (removeEntity runs
+                // in the killed RESOLVE, not REACT) can keep receiving damage from
+                // reactions (e.g. Sacred → ally → thornAura → back to the dying
+                // entity) and re-enqueue killed, causing infinite recursion.
+                if (prevHp > 0 && entity.entity.remaining_hp <= 0) {
                   followups.push({
                     trigger: EventTime.killed,
                     source:  e.source,
@@ -1055,7 +1068,7 @@
 
   const thinksFireIsAToy: Ability = {
     name:        "Plays With Fire",
-    description: "When attacking, deal equal damage to all adjacent enemies as well.",
+    description: "When attacking, deal equal damage to self",
     trigger:     EventTime.deal_damage,
     react(state, event, selfId): GameEvent[] {
       const e = event as AmountEvent;
@@ -1085,11 +1098,11 @@
     react(state, event, selfId): GameEvent[] {
       const e = event as MoveEvent;
       if (typeof e.source !== "number" || e.source !== selfId) return [];
-      const castle = index_to_coords(12);
+      const castle = index_to_coords(CASTLE_IDX);
       if (e.to.x !== castle.x || e.to.y !== castle.y) return [];
       const self = state.getEntity(selfId);
       if (!self || !(self.entity instanceof Creature)) return [];
-      if (self.entity.attributes.includes("key_used" as Attribute)) return [];
+      if (self.entity.attributes.includes("entered_castle" as Attribute)) return [];
       self.entity.attributes.push("key_used" as Attribute);
       self.entity.attack       += 10;
       self.entity.defense      += 10;
@@ -1146,6 +1159,36 @@
         e.amount = recomputed;
         state.log.push(`Reflection mirrors ${victim.description}'s attack (${e.amount}).`);
       }
+    },
+  };
+
+  const ForbiddenMove: Ability = {
+    name:        "Cannot Enter the Castle",
+    description: "The forbidden on cannot enter the castle",
+    trigger:     EventTime.moved,
+    modify(state, event, selfId): void {
+      const e = event as MoveEvent;
+      if (e.source !== selfId) return;
+      if (coords_to_index(e.to) === CASTLE_IDX_CONST) {
+        e.to = e.from;
+        state.log.push("The Forbidden One is forbidden from entering the castle.");
+      }
+    },
+  };
+
+  const ForbiddenAttack: Ability = {
+    name:        "Cannot Attack into the Castle",
+    description: "The forbidden on cannot attack into the castle",
+    trigger:     EventTime.deal_damage,
+    modify(state, event, selfId): void {
+      const e = event as AmountEvent;
+      if (e.source !== selfId) return;
+      if (typeof e.target !== "number") return;
+      const tgtCoords = state.findCoords(e.target);
+      if (!tgtCoords) return;
+      if (coords_to_index(tgtCoords) !== CASTLE_IDX_CONST) return;
+      e.amount = 0;
+      state.log.push("The Forbidden One is forbidden from attacking into the castle.");
     },
   };
 
@@ -1776,6 +1819,15 @@
     flavor: "Death follows in its wake.",
   };
 
+  const TheForbiddenOne: CreatureTemplate = {
+    kind: "creature",
+    name: "The Forbidden On", cost: 2,
+    attack: 4, defense: 2, hp: 4 * HP_MULT, energy: 1,
+    abilities: [ForbiddenMove, ForbiddenAttack],
+    icon: "ra-lighthouse", rarity: "rare",
+    flavor: "leads others to what he cannot himself possess",
+  }
+
   const SoulHarvesterTemplate: CreatureTemplate = {
     kind: "creature",
     name: "Soul Harvester", cost: 2,
@@ -1808,7 +1860,7 @@
     name: "Thorn Watcher", cost: 3,
     attack: 1, defense: 1, hp: 4 * HP_MULT, energy: 1,
     abilities: [thornAura],
-    icon: "ra-thorned-arrow", color: "#80a040", rarity: "uncommon",
+    icon: "ra-spiral-shell", color: "#80a040", rarity: "uncommon",
     flavor: "Stand too close and bleed.",
   };
 
@@ -1827,7 +1879,7 @@
     attack: 1, defense: 1, hp: 2 * HP_MULT, energy: 2,
     abilities: [],
     icon: "ra-fox", color: "green", rarity: "common",
-    flavor: "More common than rats these days",
+    flavor: "see creature name",
   }
 
   const Hydra: CreatureTemplate = {
@@ -2042,6 +2094,7 @@
     RocketShip,
     Skeleton,
     Lich,
+    TheForbiddenOne,
   ];
 
   // ============================================================
@@ -2283,6 +2336,32 @@
     flavor: "go get em",
   };
 
+  const BoonOfForbiddance: CastingTemplate = {
+    kind: "casting",
+    name:   "Holy Boon",
+    cost:   2,
+    description: "Grant a target ally creature +2 attack and +1 energy. This creature will not be able to enter the castle.",
+    targeting: {
+      kind: "target",
+      isLegal: (_s, _caster, candidate) =>
+        candidate.entity instanceof Creature
+    },
+    onPlay(state, _caster, target): GameEvent[] {
+      if (!target) { return []; }
+      const c = target.entity as Creature;
+      c.abilities.push(ForbiddenMove);
+      c.abilities.push(ForbiddenAttack);
+      c.attack += 2;
+      c.base_energy += 1;
+      state.log.push(`+2 attack and +1 energy to ${target.description}. It can no longer enter the caste.`);
+      return [];
+    },
+    icon:   "ra-unplugged",
+    color:  "#507090",
+    rarity: "common",
+    flavor: "go get em",
+  };
+
   const SolarPanels: CastingTemplate = {
     kind:   "casting",
     name:   "Atatch Solar Panels",
@@ -2423,7 +2502,7 @@
     warCry, RegeneratingHeads, coveringFire, manaSpring,
     thinksFireIsAToy, Key, Sacred, Reflection, BloodSucker, Fixing, Leadership,
     GivePotion, TakePotion, PowerCreep, SelfReplicate, Detonate, MagicEducation,
-    UndeadMaster,
+    UndeadMaster, ForbiddenMove, ForbiddenAttack,
   ]) { ABILITY_REGISTRY[ab.name] = ab; }
 
   const PASSIVE_REGISTRY: Record<string, Passive> = {};
@@ -2474,19 +2553,19 @@
     return {
       i_vals: { ...d.i_vals },
       cardNames: {
-        creature:     (d.cards.creature as Playable[]).map(t => t.name),
-        construction: (d.cards.construction as Playable[]).map(t => t.name),
-        casting:      (d.cards.casting as Playable[]).map(t => t.name),
+        creature:     d.cards.creature.map(t => t ? t.name : null),
+        construction: d.cards.construction.map(t => t ? t.name : null),
+        casting:      d.cards.casting.map(t => t ? t.name : null),
       },
     };
   }
 
   function rehydrateDeck(dto: any): Deck {
-    const lookup = (n: string) => TEMPLATE_REGISTRY[n];
+    const lookup = (n: string | null) => (n ? TEMPLATE_REGISTRY[n] ?? null : null);
     const d = new Deck(
-      dto.cardNames.creature.map(lookup).filter(Boolean) as CreatureTemplate[],
-      dto.cardNames.construction.map(lookup).filter(Boolean) as ConstructionTemplate[],
-      dto.cardNames.casting.map(lookup).filter(Boolean) as CastingTemplate[],
+      dto.cardNames.creature.map(lookup) as (CreatureTemplate | null)[] as CreatureTemplate[],
+      dto.cardNames.construction.map(lookup) as (ConstructionTemplate | null)[] as ConstructionTemplate[],
+      dto.cardNames.casting.map(lookup) as (CastingTemplate | null)[] as CastingTemplate[],
     );
     d.i_vals = { ...dto.i_vals };
     return d;
@@ -3275,57 +3354,64 @@
           {#if k === 'creature'}⚔{:else if k === 'construction'}🏗{:else}⚡{/if}
         </div>
         <div class="hand-scroll">
-          {#each hands[turn].cards[k] as card, i (card.name + i)}
-            {@const meta       = uiMeta(card.name)}
-            {@const affordable = players[turn].mana >= card.cost}
-            <div
-              class="hand-card"
-              class:unaffordable={!affordable}
-              class:casting-card={k === 'casting'}
-              class:casting-card-no-target={k === 'casting' && (card as CastingTemplate).targeting.kind === 'none'}
-              draggable={!winner && affordable}
-              role="button"
-              tabindex="0"
-              aria-label="Play {card.name} for {card.cost} mana"
-              ondragstart={e => handDragStart(e, i, k)}
-              ondragend={resetDrag}
-              onclick={() => { inspected = { kind: 'hand', card }; }}
-              onkeydown={e => e.key === 'Enter' && (inspected = { kind: 'hand', card })}
-            >
-              <span class="rarity-bar" style="background:{RARITY_COLORS[meta.rarity]}"></span>
-              <div class="card-cost"><i class="ra ra-crystal-ball"></i>{card.cost}</div>
-              {#if myTurn && !winner}
-                <!-- svelte-ignore a11y_click_events_have_key_events -->
-                <button
-                  class="reroll-btn"
-                  type="button"
-                  title="Reroll ({REROLL_COST} mana)"
-                  disabled={players[turn].mana < REROLL_COST}
-                  onmousedown={e => e.stopPropagation()}
-                  ondragstart={e => e.preventDefault()}
-                  onclick={e => rerollSlot(i, k, e)}
-                >
-                  <i class="ra ra-recycle"></i>
-                  <span class="reroll-cost">{REROLL_COST}</span>
-                </button>
-              {/if}
-              <i class="ra {meta.icon}" style="color:{meta.color}"></i>
-              <span class="card-label">{card.name}</span>
-              {#if k === 'creature'}
-                {@const c = card as CreatureTemplate}
-                <div class="card-stats">
-                  <span title="Attack">{c.attack}⚔</span>
-                  <span title="HP">{c.hp}♥</span>
-                </div>
-              {:else if k === 'construction'}
-                {@const c = card as ConstructionTemplate}
-                <div class="card-stats">
-                  <span title="HP">{c.hp}♥</span>
-                </div>
-              {:else}
-                <div class="card-stats casting-tag">instant</div>
-              {/if}
-            </div>
+          {#each hands[turn].cards[k] as card, i (i)}
+            {#if !card}
+              <div class="hand-card hand-card-spent" aria-label="Spent slot">
+                <i class="ra ra-cancel"></i>
+                <span class="card-label">Spent</span>
+              </div>
+            {:else}
+              {@const meta       = uiMeta(card.name)}
+              {@const affordable = players[turn].mana >= card.cost}
+              <div
+                class="hand-card"
+                class:unaffordable={!affordable}
+                class:casting-card={k === 'casting'}
+                class:casting-card-no-target={k === 'casting' && (card as CastingTemplate).targeting.kind === 'none'}
+                draggable={!winner && affordable}
+                role="button"
+                tabindex="0"
+                aria-label="Play {card.name} for {card.cost} mana"
+                ondragstart={e => handDragStart(e, i, k)}
+                ondragend={resetDrag}
+                onclick={() => { inspected = { kind: 'hand', card }; }}
+                onkeydown={e => e.key === 'Enter' && (inspected = { kind: 'hand', card })}
+              >
+                <span class="rarity-bar" style="background:{RARITY_COLORS[meta.rarity]}"></span>
+                <div class="card-cost"><i class="ra ra-crystal-ball"></i>{card.cost}</div>
+                {#if myTurn && !winner}
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <button
+                    class="reroll-btn"
+                    type="button"
+                    title="Reroll ({REROLL_COST} mana)"
+                    disabled={players[turn].mana < REROLL_COST}
+                    onmousedown={e => e.stopPropagation()}
+                    ondragstart={e => e.preventDefault()}
+                    onclick={e => rerollSlot(i, k, e)}
+                  >
+                    <i class="ra ra-recycle"></i>
+                    <span class="reroll-cost">{REROLL_COST}</span>
+                  </button>
+                {/if}
+                <i class="ra {meta.icon}" style="color:{meta.color}"></i>
+                <span class="card-label">{card.name}</span>
+                {#if k === 'creature'}
+                  {@const c = card as CreatureTemplate}
+                  <div class="card-stats">
+                    <span title="Attack">{c.attack}⚔</span>
+                    <span title="HP">{c.hp}♥</span>
+                  </div>
+                {:else if k === 'construction'}
+                  {@const c = card as ConstructionTemplate}
+                  <div class="card-stats">
+                    <span title="HP">{c.hp}♥</span>
+                  </div>
+                {:else}
+                  <div class="card-stats casting-tag">instant</div>
+                {/if}
+              </div>
+            {/if}
           {/each}
         </div>
       </div>
@@ -3674,6 +3760,19 @@
   }
   .hand-card:hover { border-color: var(--border-strong); transform: translateY(-10px) scale(1.05); z-index: 5; box-shadow: var(--shadow-card); }
   .hand-card.unaffordable { opacity: 0.42; cursor: not-allowed; }
+  .hand-card.hand-card-spent {
+    opacity: 0.35; cursor: not-allowed;
+    background: repeating-linear-gradient(
+      45deg,
+      var(--bg-1) 0 8px,
+      var(--bg-2) 8px 16px
+    );
+    border-style: dashed; border-color: var(--border-1);
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+  .hand-card.hand-card-spent i { color: var(--text-muted); font-size: var(--t-icon-md); }
+  .hand-card.hand-card-spent .card-label { color: var(--text-muted); }
   .hand-card:active { cursor: grabbing; }
   .hand-card i { font-size: var(--t-icon-lg); pointer-events: none; transition: transform 0.2s; }
   .hand-card:hover i { transform: scale(1.1); }
