@@ -51,12 +51,12 @@
   }
 
   function shuffle<T>(arr: T[]): T[] {
+    // Fisher–Yates. The previous loop used indices beyond arr.length which
+    // could swap `undefined` into the array.
     const a = [...arr];
-    const shuffleTimes = Math.floor(Math.random() * arr.length * 5);
-    for (let i = shuffleTimes; i > 0; i--) {
-      const xi = i % a.length;
+    for (let i = a.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
-      [a[xi], a[j]] = [a[j], a[xi]];
+      [a[i], a[j]] = [a[j], a[i]];
     }
     return a;
   }
