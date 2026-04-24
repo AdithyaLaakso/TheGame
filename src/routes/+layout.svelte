@@ -52,9 +52,11 @@
 
   function shuffle<T>(arr: T[]): T[] {
     const a = [...arr];
-    for (let i = a.length - 1; i > 0; i--) {
+    const shuffleTimes = Math.floor(Math.random() * arr.length * 5);
+    for (let i = shuffleTimes; i > 0; i--) {
+      const xi = i % a.length;
       const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
+      [a[xi], a[j]] = [a[j], a[xi]];
     }
     return a;
   }
@@ -768,6 +770,17 @@
       this.turnNumber++;
 
       this.players[opponent].mana += 2;
+
+      // Refill any slots the incoming player spent on their previous turn —
+      // "spent" only locks the slot for the rest of that turn, not the game.
+      for (const k of cardKindVariants) {
+        const slots = this.reserves[opponent].cards[k];
+        for (let i = 0; i < slots.length; i++) {
+          if (slots[i] == null) {
+            slots[i] = this.decks[opponent].draw(k);
+          }
+        }
+      }
 
       for (const entity of this.allEntities()) {
         if (entity.controller === this.turn && entity.entity instanceof Creature) {
