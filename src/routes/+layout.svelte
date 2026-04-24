@@ -163,6 +163,7 @@
     color:       string;
     kind:        PassiveKind;
     trigger:     EventTime;
+    mutexWith?:   string[];
     modify?:     (state: GameState, event: GameEvent, owner: PlayerId) => void;
     react?:      (state: GameState, event: GameEvent, owner: PlayerId) => GameEvent[];
   }
@@ -225,7 +226,7 @@
     base_energy:      number = $state(0);
     remaining_energy: number = $state(0);
     abilities:        Ability[];
-    attributes:       Attribute[];
+    attributes:       Attribute[] = $state([]);
 
     constructor (
       name: string,
@@ -248,7 +249,7 @@
     }
 
     static from_template(t: CreatureTemplate): Creature {
-      return new Creature(t.name, t.attack, t.defense, t.hp, t.energy, t.abilities, t.attributes ?? []);
+      return new Creature(t.name, t.attack, t.defense, t.hp, t.energy, t.abilities, [...(t.attributes ?? [])]);
     }
   }
 
@@ -259,7 +260,7 @@
     base_hp:      number = $state(0);
     remaining_hp: number = $state(0);
     abilities:    Ability[];
-    attributes:   Attribute[];
+    attributes:   Attribute[] = $state([]);
 
     constructor(name: string, defense: number, hp: number, abilities: Ability[], attributes: Attribute[]) {
       this.name         = name;
@@ -271,7 +272,7 @@
     }
 
     static from_template(t: ConstructionTemplate): Construction {
-      return new Construction(t.name, t.defense, t.hp, t.abilities, t.attributes ?? []);
+      return new Construction(t.name, t.defense, t.hp, t.abilities, [...(t.attributes ?? [])]);
     }
   }
 
@@ -516,7 +517,8 @@
       // let baseDamage = Math.max(0, attack - defense);
       // let crits = Math.max(0, attack - baseDamage);
       // return baseDamage + crits * 2;
-      return Math.max(0, attack - defense);
+      // return Math.max(0, attack - defense);
+      return attack / Math.max(1, Math.min(defense, 10));
     }
 
     private triggerEvent(event: GameEvent): void {
@@ -1395,6 +1397,7 @@
     description: "Gain +1 mana at the start of each of your turns.",
     icon: "ra-wheat", color: "#d8c050",
     trigger: EventTime.turn_start,
+    mutexWith: ["Mana Drought"],
     react(state, event, owner) {
       if ((event as TurnEvent).player !== owner) return [];
       state.players[owner].mana += 1;
@@ -1497,22 +1500,6 @@
         amount:  -2,
         log:     `[Pact] Blood Moon heals ${killer.description} for 2.`,
       } as AmountEvent];
-    },
-  };
-
-  const BuffThriftySorcerer: Passive = {
-    id: "thrifty_sorcerer", kind: "buff",
-    name: "Thrifty Sorcerer",
-    description: "When you play a casting card, refund 1 mana.",
-    icon: "ra-crystal-ball", color: "#a070c0",
-    trigger: EventTime.cast,
-    react(state, event, owner) {
-      const e = event as CastEvent;
-      if (e.caster !== owner) return [];
-      if (e.cast_kind !== "casting") return [];
-      state.players[owner].mana += 1;
-      state.log.push(`[Pact] Thrifty Sorcerer refunds 1 mana to ${owner}.`);
-      return [];
     },
   };
 
@@ -1747,7 +1734,7 @@
 
   const ALL_BUFFS: Passive[] = [
     BuffBountifulHarvest, BuffHeartySummons, BuffSharpSteel, BuffIronTraining, BuffRegicide,
-    BuffBloodMoon, BuffThriftySorcerer, BuffSecondWind, BuffWarmonger, BuffRelentless,
+    BuffBloodMoon, BuffSecondWind, BuffWarmonger, BuffRelentless,
   ];
 
   const ALL_CURSES: Passive[] = [
@@ -1763,6 +1750,13 @@
     const pacts: Pact[] = [];
     for (let i = 0; i < n; i++) {
       pacts.push({ id: `${buffs[i].id}__${curses[i].id}`, buff: buffs[i], curse: curses[i] });
+      while (
+        pacts[i]?.buff?.mutexWith?.includes(pacts[i]?.curse?.name ?? "") ||
+        pacts[i]?.curse?.mutexWith?.includes(pacts[i]?.buff?.name ?? "")
+      ) {
+        const newBuffs = shuffle(ALL_BUFFS);
+        pacts[i].buff = newBuffs[0];
+      }
     }
     return pacts;
   }
@@ -2046,6 +2040,8 @@
     WickedLeader,
     Shark,
     RocketShip,
+    Skeleton,
+    Lich,
   ];
 
   // ============================================================
@@ -2460,14 +2456,15 @@
     if (!dto) return null;
     const i = dto.inner;
     const abilities = i.abilityNames.map((n: string) => ABILITY_REGISTRY[n]).filter(Boolean);
+    const attrs: Attribute[] = Array.isArray(i.attributes) ? [...i.attributes] : [];
     let inner: Creature | Construction;
     if (i.kind === "creature") {
-      const c = new Creature(i.name, i.attack, i.defense, i.base_hp, i.base_energy, abilities, i.attributes);
+      const c = new Creature(i.name, i.attack, i.defense, i.base_hp, i.base_energy, abilities, attrs);
       c.remaining_hp = i.remaining_hp;
       c.remaining_energy = i.energy_remaining;
       inner = c;
     } else {
-      inner = new Construction(i.name, i.defense, i.base_hp, abilities, i.attributes);
+      inner = new Construction(i.name, i.defense, i.base_hp, abilities, attrs);
       inner.remaining_hp = i.remaining_hp;
     }
     return { id: dto.id, controller: dto.controller, description: dto.description, entity: inner };
@@ -2624,7 +2621,7 @@
   let game_state = $state(new GameState(makeDeck()));
 
   // ── Pact selection state ────────────────────────────────────────────────────
-  const PACT_OFFER_COUNT = 5;
+  const PACT_OFFER_COUNT = 3;
   let pactOffering: Pact[] = $state(generatePactOffering(PACT_OFFER_COUNT));
 
   function selectPact(pact: Pact): void {
@@ -3094,6 +3091,7 @@
               {#each stats.attributes as attr}
                 {@const am = ATTRIBUTE_META[attr]}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
                 <li
                   class="attr-chip"
                   role="button"
@@ -3112,6 +3110,7 @@
             <ul class="stat-list">
               {#each stats.abilities as ab}
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
                 <li
                   class="stat-row ability-row ability-clickable"
                   role="button"
@@ -3409,16 +3408,27 @@
     height: 100%; overflow: hidden;
     background: var(--bg-0); color: var(--text-2);
     font-family: var(--font-body);
-    font-size: 22px;
+    font-size: clamp(14px, 0.75vw + 0.55vh, 20px);
     line-height: 1.5;
   }
 
   /* ── Shell ── */
-  .app { height: 100vh; width: 100vw; display: flex; flex-direction: column; overflow: hidden; }
+  .app {
+    height: 100vh; width: 100vw; overflow: hidden;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas:
+      "hdr  hdr  hdr"
+      "sl   ar   sr"
+      "sl   hand sr";
+    min-height: 0;
+  }
 
   /* ── Header ── */
   .hdr {
-    height: 72px; flex-shrink: 0;
+    grid-area: hdr;
+    height: 3.4rem; flex-shrink: 0;
     display: flex; align-items: center; gap: 1.3rem; padding: 0 1.5rem;
     background: var(--bg-1); border-bottom: 1px solid var(--border-1);
     box-shadow: var(--shadow-hdr); z-index: 10;
@@ -3456,12 +3466,13 @@
     font-weight: 600;
   }
 
-  /* ── Body: three-column layout ── */
-  .body { flex: 1; display: flex; overflow: hidden; min-height: 0; }
+  /* ── Body: grid layout passthrough ── */
+  .body { display: contents; }
 
   /* ── Left Sidebar: Inspector ── */
   .sidebar-left {
-    width: 24vw; min-width: 240px; flex-shrink: 0;
+    grid-area: sl;
+    width: 22vw; min-width: 12rem; height: 100%;
     background: var(--bg-1); border-right: 1px solid var(--border-1);
     overflow-y: auto; display: flex; flex-direction: column;
     scrollbar-width: thin; scrollbar-color: var(--border-2) transparent;
@@ -3470,7 +3481,8 @@
 
   /* ── Right Sidebar: Log ── */
   .sidebar-right {
-    width: 20vw; min-width: 220px; flex-shrink: 0;
+    grid-area: sr;
+    width: 18vw; min-width: 11rem; height: 100%;
     background: var(--bg-1); border-left: 1px solid var(--border-1);
     overflow-y: auto; display: flex; flex-direction: column;
     padding: 1rem 1rem 1.3rem;
@@ -3489,7 +3501,7 @@
     pointer-events: none;
   }
   .insp-ring {
-    width: 108px; height: 108px; border-radius: 50%; border: 2px solid;
+    width: 5.5rem; height: 5.5rem; border-radius: 50%; border: 2px solid;
     display: flex; align-items: center; justify-content: center;
     font-size: var(--t-icon-xl); position: relative; z-index: 1;
   }
@@ -3555,7 +3567,9 @@
 
   /* ── Arena ── */
   .arena {
-    flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden;
+    grid-area: ar;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+    min-width: 0; min-height: 0;
     background: radial-gradient(ellipse at 50% 44%, var(--bg-2) 0%, var(--bg-0) 62%);
     position: relative;
   }
@@ -3568,8 +3582,8 @@
   .game-grid {
     position: relative; z-index: 1;
     display: grid;
-    grid-template-columns: repeat(5, min(calc((56vw - 48px) / 5), calc((100vh - 288px) / 5)));
-    grid-template-rows:    repeat(5, min(calc((56vw - 48px) / 5), calc((100vh - 288px) / 5)));
+    grid-template-columns: repeat(5, min(calc((56vw - 48px) / 5), calc((100vh - 3.4rem - 8.5rem - 48px) / 5)));
+    grid-template-rows:    repeat(5, min(calc((56vw - 48px) / 5), calc((100vh - 3.4rem - 8.5rem - 48px) / 5)));
     gap: 6px; background: var(--bg-1); padding: 12px; border-radius: 12px;
     border: 1px solid var(--border-1);
     box-shadow: 0 0 0 1px var(--bg-0), var(--shadow-grid);
@@ -3632,7 +3646,8 @@
 
   /* ── Hand area ── */
   .hand-area {
-    height: 176px; flex-shrink: 0;
+    grid-area: hand;
+    height: 8.5rem; min-width: 0;
     background: var(--bg-1); border-top: 1px solid var(--border-1);
     box-shadow: 0 -8px 32px rgba(0,0,0,0.6);
     display: flex; align-items: stretch; gap: 0; padding: 0; z-index: 5; overflow: hidden;
@@ -3650,7 +3665,7 @@
     padding: 0.55rem 0; scrollbar-width: thin; scrollbar-color: var(--border-2) transparent; align-items: center;
   }
   .hand-card {
-    position: relative; width: 118px; height: 152px; flex-shrink: 0;
+    position: relative; width: 6.5rem; height: 7.5rem; flex-shrink: 0;
     background: linear-gradient(160deg, var(--bg-2) 0%, var(--bg-1) 100%);
     border: 1px solid var(--border-1); border-radius: 8px;
     cursor: grab; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -3694,33 +3709,46 @@
     position: fixed; inset: 0; z-index: 100;
     background: rgba(6,4,12,0.88); backdrop-filter: blur(6px);
     display: flex; align-items: center; justify-content: center;
-    padding: 2rem;
+    padding: 1.2rem;
+    overflow-y: auto;
   }
   .pact-modal {
     background: linear-gradient(160deg, var(--bg-2) 0%, var(--bg-0) 100%);
     border: 1px solid var(--border-strong); border-radius: 14px;
-    max-width: 1120px; width: 100%; padding: 2rem 2.2rem;
+    max-width: min(1120px, calc(100vw - 2rem));
+    width: 100%;
+    max-height: calc(100vh - 2rem);
+    padding: 1.4rem 1.5rem;
     box-shadow: 0 24px 60px rgba(0,0,0,0.75);
     color: var(--text-2);
+    display: flex; flex-direction: column; gap: 0.6rem;
+    overflow: hidden;
   }
-  .pact-title { font-family: var(--font-display); color: var(--accent-gold); text-align: center; margin: 0 0 0.4rem; font-size: var(--t-2xl); letter-spacing: 0.08em; font-weight: 700; }
-  .pact-sub { color: var(--text-3); text-align: center; margin: 0 0 1.3rem; font-style: italic; font-size: var(--t-md); }
-  .pact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; }
+  .pact-title { font-family: var(--font-display); color: var(--accent-gold); text-align: center; margin: 0; font-size: var(--t-xl); letter-spacing: 0.08em; font-weight: 700; }
+  .pact-sub { color: var(--text-3); text-align: center; margin: 0 0 0.4rem; font-style: italic; font-size: var(--t-sm); }
+  .pact-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.75rem;
+    overflow-y: auto;
+    padding-right: 4px;
+  }
   .pact-card {
     background: linear-gradient(180deg, var(--bg-3) 0%, var(--bg-1) 100%);
     border: 1px solid var(--border-2); border-radius: 10px;
-    padding: 0.85rem; cursor: pointer;
-    display: flex; flex-direction: column; gap: 0.5rem;
+    padding: 0.65rem; cursor: pointer;
+    display: flex; flex-direction: column; gap: 0.4rem;
     transition: border-color 0.15s, transform 0.12s;
+    min-width: 0;
   }
-  .pact-card:hover { border-color: var(--accent-gold); transform: translateY(-4px); box-shadow: 0 10px 24px color-mix(in srgb, var(--accent-gold) 22%, transparent); }
-  .pact-half { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0.6rem 0.35rem; border-radius: 6px; }
-  .pact-half i { font-size: var(--t-icon-md); margin-bottom: 0.3rem; }
+  .pact-card:hover { border-color: var(--accent-gold); transform: translateY(-2px); box-shadow: 0 8px 20px color-mix(in srgb, var(--accent-gold) 22%, transparent); }
+  .pact-half { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0.45rem 0.3rem; border-radius: 6px; }
+  .pact-half i { font-size: var(--t-lg); margin-bottom: 0.2rem; }
   .pact-buff { background: color-mix(in srgb, var(--accent-green) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent-green) 30%, transparent); }
   .pact-curse { background: color-mix(in srgb, var(--accent-red) 10%, transparent); border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent); }
-  .pact-half-name { font-family: var(--font-display); font-size: var(--t-md); color: var(--text-1); font-weight: 700; }
-  .pact-half-desc { font-size: var(--t-sm); color: var(--text-3); line-height: 1.4; margin-top: 0.3rem; }
-  .pact-divider { text-align: center; color: var(--text-4); font-size: var(--t-md); }
+  .pact-half-name { font-family: var(--font-display); font-size: var(--t-sm); color: var(--text-1); font-weight: 700; line-height: 1.25; }
+  .pact-half-desc { font-size: var(--t-xs); color: var(--text-3); line-height: 1.35; margin-top: 0.2rem; }
+  .pact-divider { text-align: center; color: var(--text-4); font-size: var(--t-sm); }
 
   /* ── Pact corner indicators ───────────────────────────────────────────── */
   .pact-corners { display: flex; gap: 0.9rem; align-items: center; }
