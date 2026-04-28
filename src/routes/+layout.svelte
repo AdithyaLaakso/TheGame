@@ -857,13 +857,15 @@
 
   const healingAura: Ability = {
     name:        "Healing Aura",
-    description: "At the start of your turn, heal 2 hp to each of your other creatures.",
+    description: "At the start of your turn, heal 2 hp to each adjacent creature.",
     trigger:     EventTime.turn_start,
     react(state, event, selfId): GameEvent[] {
       const owner = state.getEntity(selfId)?.controller;
       if (!owner) return [];
       if ((event as TurnEvent).player !== owner) return [];
-      return state.allEntities()
+      let selfCoords = state.findCoords(selfId);
+      if (!selfCoords) return [];
+      return adjacentEntities(state, selfCoords)
         .filter(e => e.controller === owner && e.id !== selfId && e.entity instanceof Creature)
         .map(e => ({
           trigger: EventTime.take_damage,
