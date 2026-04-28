@@ -203,7 +203,6 @@
     energy:    number;
     abilities: Ability[];
     attributes?: Attribute[];
-    // UI-only metadata
     icon?:     string;
     color?:    string;
     rarity?:   "common" | "uncommon" | "rare" | "legendary";
@@ -218,7 +217,6 @@
     hp:        number;
     abilities: Ability[];
     attributes?: Attribute[];
-    // UI-only metadata
     icon?:     string;
     color?:    string;
     rarity?:   "common" | "uncommon" | "rare" | "legendary";
@@ -309,7 +307,11 @@
   }
 
   class Deck {
-    cards: Record<CardType, (Playable | null)[]>;
+    cards: Record<CardType, (Playable | null)[]> = $state({
+      casting: [],
+      creature: [],
+      construction: [],
+    });
     i_vals: Record<CardType, number> = {
       casting: 0,
       creature: 0,
@@ -358,7 +360,7 @@
   // GAME STATE
   // ============================================================
 
-  const HAND_SIZES: Record<CardType, number> = { creature: 4, construction: 3, casting: 2 };
+  const HAND_SIZES: Record<CardType, number> = { creature: 3, construction: 2, casting: 1 };
   const REROLL_COST = 1;
 
   class GameState {
@@ -2501,9 +2503,9 @@
   // ── Game initialisation ─────────────────────────────────────────────────────
   function makeDeck(): Deck {
     return new Deck(
-      creatures.sort(() => Math.random()),
-      constructions.sort(() => Math.random()),
-      castings.sort(() => Math.random()),
+      shuffle(creatures.sort(() => Math.random())),
+      shuffle(constructions.sort(() => Math.random())),
+      shuffle(castings.sort(() => Math.random())),
     );
   }
 
