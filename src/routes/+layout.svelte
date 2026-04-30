@@ -55,8 +55,8 @@
     // could swap `undefined` into the array.
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [a[i], a[j]] = [a[j], a[i]];
+      const seed = Math.floor(Date.now()) % (a.length - 1);
+      [a[i], a[seed]] = [a[seed], a[i]];
     }
     return a;
   }
@@ -172,7 +172,7 @@
     color:       string;
     kind:        PassiveKind;
     trigger:     EventTime;
-    mutexWith?:   string[];
+    mutexWith?:  string[];
     modify?:     (state: GameState, event: GameEvent, owner: PlayerId) => void;
     react?:      (state: GameState, event: GameEvent, owner: PlayerId) => GameEvent[];
   }
@@ -194,35 +194,33 @@
   }
 
   interface CreatureTemplate extends Playable {
-    kind: "creature";
-    name:      string;
-    cost:      number;
-    attack:    number;
-    defense:   number;
-    hp:        number;
-    energy:    number;
-    abilities: Ability[];
+    kind:        "creature";
+    name:        string;
+    cost:        number;
+    attack:      number;
+    defense:     number;
+    hp:          number;
+    energy:      number;
+    abilities:   Ability[];
     attributes?: Attribute[];
-    // UI-only metadata
-    icon?:     string;
-    color?:    string;
-    rarity?:   "common" | "uncommon" | "rare" | "legendary";
-    flavor?:   string;
+    icon?:       string;
+    color?:      string;
+    rarity?:     "common" | "uncommon" | "rare" | "legendary";
+    flavor?:     string;
   }
 
   interface ConstructionTemplate extends Playable {
-    kind: "construction";
-    name:      string;
-    cost:      number;
-    defense:   number;
-    hp:        number;
-    abilities: Ability[];
+    kind:        "construction";
+    name:        string;
+    cost:        number;
+    defense:     number;
+    hp:          number;
+    abilities:   Ability[];
     attributes?: Attribute[];
-    // UI-only metadata
-    icon?:     string;
-    color?:    string;
-    rarity?:   "common" | "uncommon" | "rare" | "legendary";
-    flavor?:   string;
+    icon?:       string;
+    color?:      string;
+    rarity?:     "common" | "uncommon" | "rare" | "legendary";
+    flavor?:     string;
   }
 
   class Creature {
