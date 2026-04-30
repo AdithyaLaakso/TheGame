@@ -203,10 +203,10 @@
     energy:      number;
     abilities:   Ability[];
     attributes?: Attribute[];
-    icon?:       string;
-    color?:      string;
-    rarity?:     "common" | "uncommon" | "rare" | "legendary";
-    flavor?:     string;
+    icon?:     string;
+    color?:    string;
+    rarity?:   "common" | "uncommon" | "rare" | "legendary";
+    flavor?:   string;
   }
 
   interface ConstructionTemplate extends Playable {
@@ -307,7 +307,11 @@
   }
 
   class Deck {
-    cards: Record<CardType, (Playable | null)[]>;
+    cards: Record<CardType, (Playable | null)[]> = $state({
+      casting: [],
+      creature: [],
+      construction: [],
+    });
     i_vals: Record<CardType, number> = {
       casting: 0,
       creature: 0,
@@ -356,7 +360,7 @@
   // GAME STATE
   // ============================================================
 
-  const HAND_SIZES: Record<CardType, number> = { creature: 4, construction: 3, casting: 2 };
+  const HAND_SIZES: Record<CardType, number> = { creature: 3, construction: 2, casting: 1 };
   const REROLL_COST = 1;
 
   class GameState {
@@ -855,13 +859,15 @@
 
   const healingAura: Ability = {
     name:        "Healing Aura",
-    description: "At the start of your turn, heal 2 hp to each of your other creatures.",
+    description: "At the start of your turn, heal 2 hp to each adjacent creature.",
     trigger:     EventTime.turn_start,
     react(state, event, selfId): GameEvent[] {
       const owner = state.getEntity(selfId)?.controller;
       if (!owner) return [];
       if ((event as TurnEvent).player !== owner) return [];
-      return state.allEntities()
+      let selfCoords = state.findCoords(selfId);
+      if (!selfCoords) return [];
+      return adjacentEntities(state, selfCoords)
         .filter(e => e.controller === owner && e.id !== selfId && e.entity instanceof Creature)
         .map(e => ({
           trigger: EventTime.take_damage,
@@ -2497,9 +2503,9 @@
   // ── Game initialisation ─────────────────────────────────────────────────────
   function makeDeck(): Deck {
     return new Deck(
-      creatures.sort(() => Math.random()),
-      constructions.sort(() => Math.random()),
-      castings.sort(() => Math.random()),
+      shuffle(creatures.sort(() => Math.random())),
+      shuffle(constructions.sort(() => Math.random())),
+      shuffle(castings.sort(() => Math.random())),
     );
   }
 

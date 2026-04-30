@@ -2,7 +2,7 @@
 // players A and B. Any message from one player is forwarded to the other.
 import { WebSocketServer } from "ws";
 
-const PORT = Number(process.env.PORT ?? 8080);
+const PORT = Number(process.env.PORT ?? 8090);
 const wss = new WebSocketServer({ port: PORT });
 
 /** @type {{A: import('ws').WebSocket|null, B: import('ws').WebSocket|null}} */
