@@ -23,7 +23,7 @@
   type PlayerId       = "A" | "B";
   type CardType = "creature" | "construction" | "casting";
 
-  type Attribute = "undead" | "human" | "magic" | "has_potion" | "beast";
+  type Attribute = "undead" | "human" | "magic" | "has_potion" | "beast" | "machine";
 
   interface Coords {
     x: number;
@@ -1083,6 +1083,29 @@
     },
   };
 
+  const generateRobot: Ability = {
+    name:        "Produces Robots",
+    description: "If the square in front is empty at the start of your turn, a robot will be produced in that square",
+    trigger: EventTime.turn_start,
+    react(s, e, id): GameEvent[] {
+      let event = e as TurnEvent;
+      let entity = s.getEntity(id);
+      if (event.player !== entity?.controller) return [];
+
+      let pos = s.findCoords(id);
+      if (!pos) return [];
+
+      const dx = entity!.controller === "A" ? -1 : 1;
+      const front: Coords = { x: pos.x + dx, y: pos.y };
+      if (front.x < 0 || front.x >= NUM_ROWS) return [];
+      if (s.getEntityAt(front)) return [];
+
+      s.spawn(Robot, entity!.controller, front, id);
+      s.log.push(`Robot Factory produces a Robot at (${front.x},${front.y}).`);
+      return [];
+    }
+  }
+
   const thinksFireIsAToy: Ability = {
     name:        "Plays With Fire",
     description: "When attacking, deal equal damage to self",
@@ -1240,7 +1263,7 @@
 
   const Fixing: Ability = {
     name:        "Tinker",
-    description: "At the start of your turn, heal adjacent allied constructions for 2 hp.",
+    description: "At the start of your turn, heal adjacent allied constructions and machines for 2 hp.",
     trigger:     EventTime.turn_start,
     react(state, event, selfId): GameEvent[] {
       const self = state.getEntity(selfId);
@@ -1248,14 +1271,18 @@
       if (!self || !origin) return [];
       if ((event as TurnEvent).player !== self.controller) return [];
       return adjacentEntities(state, origin)
-        .filter(n => n.controller === self.controller && n.entity instanceof Construction)
-        .map(n => ({
+        .filter(
+          (n: Entity) =>
+            n.controller === self.controller &&
+            (n.entity instanceof Construction || (n.entity as Creature).attributes.includes("machine"))
+        )
+        .map((n: Entity) => ({
           trigger: EventTime.take_damage,
           source:  selfId,
           target:  n.id,
           amount:  -2,
           log:     `Tinker patches up ${n.description}.`,
-        } as AmountEvent));
+        }) as AmountEvent);
     },
   };
 
@@ -2061,7 +2088,7 @@
     kind: "creature",
     name: "Rocket Ship", cost: 3,
     attack: 5, defense: 2, hp: 3 * HP_MULT, energy: 2,
-    abilities: [],
+    abilities: [], attributes: ["machine"],
     icon: 'ra-ship-emblem', rarity: 'common',
     flavor: "Traveled back in time to clean up your mess",
   }
@@ -2082,6 +2109,15 @@
     abilities: [UndeadMaster],
     icon: 'ra-alien-fire', rarity: 'legendary',
     flavor: "lived long enough to become the vilan",
+  }
+
+  const Robot: CreatureTemplate = {
+    kind: "creature",
+    name: "Robot", cost: 1,
+    attack: 1, defense: 1, hp: 2 * HP_MULT, energy: 1,
+    abilities: [], attributes: ['machine'],
+    icon: 'ra-robot-arm', rarity: 'common',
+    flavor: 'if it talks like us is it still a machine?',
   }
 
   const creatures: CreatureTemplate[] = [
@@ -2197,6 +2233,16 @@
     rarity:    "uncommon",
     flavor:    "It hums with borrowed power.",
   };
+
+  const RobotFactory: ConstructionTemplate = {
+    kind: "construction",
+    name: "Robot Factory",
+    cost: 5,
+    defense: 2,
+    hp: 3,
+    abilities: [generateRobot],
+    icon: 'ra-cog'
+  }
 
   const constructions: ConstructionTemplate[] = [
     SniperTowerTemplate,
@@ -2768,6 +2814,7 @@
     magic:        { icon: 'ra-crystal-ball',color: '#80a0ff', description: 'Counts as magical for effects that target magic.' },
     has_potion:   { icon: 'ra-round-potion',color: '#60c080', description: 'Drank the kool aid' },
     beast:        { icon: 'ra-wolf-head',   color: 'gray', description: 'Carries a potion that can be consumed or stolen.' },
+    machine:      { icon: 'ra-surveillance-camera',   color: 'gray', description: 'Carries a potion that can be consumed or stolen.' },
   };
 
   let inspected: Inspected = $state(null);
