@@ -2921,6 +2921,9 @@
         game_state.log.push(`🏰 Player ${currentTurn} wins by holding the castle!`);
         return;
       }
+    } else if (!castleEntity){
+      game_state.players['A'].castleHolds = 0;
+      game_state.players['B'].castleHolds = 0;
     } else {
       game_state.players[currentTurn].castleHolds = 0;
     }
